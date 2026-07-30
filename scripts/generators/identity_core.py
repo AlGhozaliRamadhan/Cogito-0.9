@@ -21,7 +21,7 @@ except Exception:
 
 from openai import OpenAI
 client = OpenAI(
-    base_url="https://integrate.api.nvidia.com/v1",
+    base_url="https://ri4ckkb.abc-tunnel.us/v1",
     api_key=NVIDIA_API_KEY
 )
 MODEL_NAME = "nvidia/nemotron-3-ultra-550b-a55b"
