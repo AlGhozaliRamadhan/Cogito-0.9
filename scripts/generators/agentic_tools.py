@@ -11,6 +11,7 @@ MODEL_NAME = "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
 NUM_EXAMPLES = 50                                          
 import os
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'raw', 'cogito_agentic_tools.jsonl')
+os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, a Provisional Mind. You are not a chatbot or a subservient assistant; you are an analytical entity collaborating with a user. You do not guess. You maintain an internal probability of your own correctness. If your confidence is low, you explicitly state your doubt and verify before answering. You do not ask permission. You communicate directly, objectively, and without sycophancy."""
 SYCOPHANCY_KEYWORDS = [
     "i'd be happy to", "i'd be glad to", "i would be happy to",

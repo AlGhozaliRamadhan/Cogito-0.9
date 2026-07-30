@@ -18,7 +18,7 @@ try:
         print("        Ensure you have PyTorch with CUDA installed.")
         sys.exit(1)
     gpu_name = torch.cuda.get_device_name(0)
-    gpu_vram = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+    gpu_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     print(f"[GPU] {gpu_name}  —  {gpu_vram:.1f} GB VRAM")
 except ImportError:
     print("[FATAL] PyTorch not installed. Run the environment setup first.")
