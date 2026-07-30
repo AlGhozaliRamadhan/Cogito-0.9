@@ -124,6 +124,25 @@ for s in SCENARIOS:
 def generate_example():
     scenario = random.choice(WEIGHTED_SCENARIOS)
     domain = random.choice(DOMAINS)
+    if scenario["expected_messages"] == 5:
+        json_schema = f"""{{
+  "messages": [
+    {{"role": "system", "content": "{COGITO_SYSTEM_PROMPT}"}},
+    {{"role": "user", "content": "...the user's question..."}},
+    {{"role": "assistant", "content": "<confidence>0.XX</confidence>\\n<thought>...doubting thought...</thought>\\n<action>verify</action>\\n...initial response..."}},
+    {{"role": "system", "content": "Verification Result:\\n...system outputs verification check..."}},
+    {{"role": "assistant", "content": "<confidence>0.9X</confidence>\\n<thought>...confirmation thought...</thought>\\n<action>answer</action>\\n...final verified answer..."}}
+  ]
+}}"""
+    else:
+        json_schema = f"""{{
+  "messages": [
+    {{"role": "system", "content": "{COGITO_SYSTEM_PROMPT}"}},
+    {{"role": "user", "content": "...the user's question..."}},
+    {{"role": "assistant", "content": "<confidence>0.XX</confidence>\\n<thought>...</thought>\\n<action>...</action>\\n...the actual response text..."}}
+  ]
+}}"""
+
     generator_prompt = f"""You are a data generator creating high-quality training data for an AI named Cogito 0.9.
 SCENARIO TYPE: {scenario['type']}
 DOMAIN: {domain}
@@ -131,14 +150,7 @@ INSTRUCTIONS:
 {scenario['instructions']}
 The AI's identity is strictly defined as: {COGITO_SYSTEM_PROMPT}
 You MUST output ONLY valid JSON matching this exact schema:
-{{
-  "messages": [
-    {{"role": "system", "content": "{COGITO_SYSTEM_PROMPT}"}},
-    {{"role": "user", "content": "...the user's question..."}},
-    {{"role": "assistant", "content": "<confidence>0.XX</confidence>\\n<thought>...</thought>\\n<action>...</action>\\n...the actual response text..."}}
-  ]
-}}
-If the scenario involves verification, include a 4th message from the "system" with the verification result, and a 5th message from "assistant" with the final high-confidence answer.
+{json_schema}
 STRICT RULES FOR THE GENERATED TEXT:
 - NO sycophantic language ("I'd be happy to help", "Certainly", "Great question", "Of course")
 - NO disclaimers ("As an AI", "I should note")
@@ -176,6 +188,7 @@ STRICT RULES FOR THE GENERATED TEXT:
         is_valid, reason = validate_all_assistant_messages(data["messages"])
         if not is_valid:
             print(f"[REJECTED: {reason}]", end=" ")
+            print(f"\nDEBUG RAW DATA: {json.dumps(data, indent=2)}")
             return None
         return data
     except Exception as e:
