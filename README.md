@@ -26,9 +26,16 @@ try:
 except Exception as e:
     print("WARNING: Could not load HF_TOKEN from Kaggle Secrets. Pushing to Hub will be skipped.")
 
-# 2. Clone the repository and install dependencies
-!git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
-%cd Cogito-0.9
+# 2. Clone the repository (or pull latest updates if already cloned)
+REPO_DIR = "/kaggle/working/Cogito-0.9"
+if os.path.isdir(REPO_DIR):
+    print("Repo already exists — checking for updates...")
+    os.chdir(REPO_DIR)
+    !git pull
+    print("Repo is up to date!")
+else:
+    !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
+    %cd Cogito-0.9
 !pip install -r requirements.txt
 
 # 3. GENERATE the datasets one by one
