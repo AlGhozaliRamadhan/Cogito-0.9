@@ -1,5 +1,10 @@
 # Cogito 0.9
 
+![Last Commit](https://img.shields.io/github/last-commit/AlGhozaliRamadhan/Cogito-0.9?label=last%20update&style=flat-square)
+![Repo Size](https://img.shields.io/github/repo-size/AlGhozaliRamadhan/Cogito-0.9?style=flat-square)
+![Stars](https://img.shields.io/github/stars/AlGhozaliRamadhan/Cogito-0.9?style=flat-square)
+![License](https://img.shields.io/github/license/AlGhozaliRamadhan/Cogito-0.9?style=flat-square)
+
 A provisional mind, not a subservient assistant. Cogito 0.9 doubts, verifies, and reasons before answering.
 
 ## Kaggle Quickstart
