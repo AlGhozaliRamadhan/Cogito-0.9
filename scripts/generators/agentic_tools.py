@@ -3,29 +3,15 @@ import random
 import re
 import time
 from openai import OpenAI
-
-# --- CONFIGURATION ---
-# You can use OpenAI, OpenRouter, or DeepSeek. 
-# Just change the api_key and base_url if needed.
 client = OpenAI(
-    api_key="sk_9router", # <--- PUT YOUR API KEY HERE
+    api_key="sk_9router",                             
     base_url="http://localhost:20128/v1"
 )
-
 MODEL_NAME = "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
-NUM_EXAMPLES = 50      # Start with 50, scale to 500+ later
+NUM_EXAMPLES = 50                                          
 import os
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'raw', 'cogito_agentic_tools.jsonl')
-
-# --- THE COGITO 0.9 IDENTITY ---
 COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, a Provisional Mind. You are not a chatbot or a subservient assistant; you are an analytical entity collaborating with a user. You do not guess. You maintain an internal probability of your own correctness. If your confidence is low, you explicitly state your doubt and verify before answering. You do not ask permission. You communicate directly, objectively, and without sycophancy."""
-
-# =============================================================================
-# FLAW 1 FIX — Sycophancy Filter
-# =============================================================================
-# Any assistant message containing these phrases is rejected outright.
-# The generator prompt already tells GPT-4o to avoid these, but at
-# temperature 0.8 it will occasionally lapse. This is the safety net.
 SYCOPHANCY_KEYWORDS = [
     "i'd be happy to", "i'd be glad to", "i would be happy to",
     "certainly", "sure,", "sure!", "of course",
@@ -39,7 +25,6 @@ SYCOPHANCY_KEYWORDS = [
     "that's a great", "that's an excellent",
     "thank you for", "thanks for asking",
 ]
-
 def check_sycophancy(text):
     """Returns the offending phrase if sycophancy is detected, else None."""
     text_lower = text.lower()
@@ -47,18 +32,10 @@ def check_sycophancy(text):
         if phrase in text_lower:
             return phrase
     return None
-
-# =============================================================================
-# FLAW 2 FIX — Full Tag Validation
-# =============================================================================
-# Every assistant message must contain ALL three structural tags.
-# Previous version only checked for <action>.
 REQUIRED_TAGS = ["<confidence>", "</confidence>", "<thought>", "</thought>", "<action>", "</action>"]
-
 def validate_assistant_tags(content):
     """Ensures an assistant message contains ALL required Cogito 0.9 structural tags."""
     return all(tag in content for tag in REQUIRED_TAGS)
-
 def validate_confidence_value(content):
     """Validates that the confidence score is a parseable float in [0.0, 1.0]."""
     match = re.search(r"<confidence>([\d.]+)</confidence>", content)
@@ -69,7 +46,6 @@ def validate_confidence_value(content):
         return 0.0 <= score <= 1.0
     except ValueError:
         return False
-
 def validate_all_assistant_messages(messages):
     """
     Iterates through all messages and validates every assistant turn.
@@ -79,23 +55,14 @@ def validate_all_assistant_messages(messages):
         if msg.get("role") != "assistant":
             continue
         content = msg["content"]
-        
-        # FLAW 2: Check all structural tags
         if not validate_assistant_tags(content):
             return False, f"Message {i}: missing required tags"
-        
-        # Check confidence is a valid float
         if not validate_confidence_value(content):
             return False, f"Message {i}: invalid confidence value"
-        
-        # FLAW 1: Check for sycophancy
         offending = check_sycophancy(content)
         if offending:
             return False, f"Message {i}: sycophancy detected ('{offending}')"
-    
     return True, None
-
-# --- AGENTIC SCENARIOS ---
 SCENARIOS = [
     {
         "type": "Read File / Explore Codebase",
@@ -119,11 +86,6 @@ The AI must output a bash command inside a <bash> tag to execute something (e.g.
 A 'system' message MUST follow simulating the terminal output. If it's a test, show a realistic PASS or FAIL output. If it's a script, show the console output.
 Finally, the AI responds again with HIGH confidence (0.85+) and explains the result of the execution to the user."""
     },
-    # ==========================================================================
-    # FLAW 3 FIX — Direct Answer scenario to prevent catastrophic forgetting.
-    # Without this, 100% of agentic data uses run_command, training the model
-    # to shell out to the terminal for trivial knowledge questions.
-    # ==========================================================================
     {
         "type": "Direct Answer (No Tools)",
         "weight": 30,
@@ -135,15 +97,11 @@ The AI must NOT run a bash command, read a file, or use any tool. It answers dir
 The response must be concise, technically precise, and demonstrate deep understanding without over-relying on execution."""
     }
 ]
-
 WEIGHTED_SCENARIOS = []
 for s in SCENARIOS:
     WEIGHTED_SCENARIOS.extend([s] * s["weight"])
-
 def generate_example():
     scenario = random.choice(WEIGHTED_SCENARIOS)
-    
-    # --- Build JSON schema based on scenario type ---
     if scenario["type"] == "Direct Answer (No Tools)":
         json_schema = f"""{{
   "messages": [
@@ -162,19 +120,13 @@ def generate_example():
     {{"role": "assistant", "content": "<confidence>0.XX</confidence>\\n<thought>...</thought>\\n<action>answer</action>\\n...final response based on terminal output..."}}
   ]
 }}"""
-
     generator_prompt = f"""You are a data generator creating high-quality Agentic training data for an AI named Cogito 0.9.
-
 SCENARIO TYPE: {scenario['type']}
-
 INSTRUCTIONS:
 {scenario['instructions']}
-
 The AI's identity is strictly defined as: {COGITO_SYSTEM_PROMPT}
-
 You MUST output ONLY valid JSON matching this exact schema:
 {json_schema}
-
 STRICT RULES:
 - The bash commands (if any) must be realistic and safe (cat, ls, grep, python, npm, gcc, etc.).
 - The simulated terminal output (if any) must be 100% realistic.
@@ -183,7 +135,6 @@ STRICT RULES:
 - The AI speaks like a brilliant, direct, slightly detached colleague.
 - Confidence scores must be realistic floats between 0.00 and 1.00.
 - NO markdown wrapping the JSON. Output RAW JSON only."""
-
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
@@ -194,74 +145,50 @@ STRICT RULES:
             response_format={"type": "json_object"},
             temperature=0.8
         )
-        
         data = json.loads(response.choices[0].message.content)
-        
-        # =====================================================================
-        # VALIDATION PIPELINE (all 3 flaws addressed here)
-        # =====================================================================
         expected = scenario["expected_messages"]
-        
-        # Step 1: Check message count matches the scenario type
         if "messages" not in data or len(data["messages"]) != expected:
             return None
-        
-        # Step 2: Validate ALL assistant messages (tags + confidence + sycophancy)
         is_valid, reason = validate_all_assistant_messages(data["messages"])
         if not is_valid:
             print(f"[REJECTED: {reason}]", end=" ")
             return None
-        
-        # Step 3: Scenario-specific action tag validation
         if scenario["type"] == "Direct Answer (No Tools)":
-            # Must use 'answer' action, must NOT contain tool-related tags
             assistant_content = data["messages"][2]["content"]
             if "<action>answer</action>" not in assistant_content:
                 return None
-            # Reject if the model sneaked in a bash command anyway
             if "<bash>" in assistant_content or "run_command" in assistant_content:
                 print("[REJECTED: Direct Answer used tools]", end=" ")
                 return None
         else:
-            # Multi-turn: first assistant must run_command with bash, second must answer
             a1 = data["messages"][2]["content"]
             a2 = data["messages"][4]["content"]
             if "<action>run_command</action>" not in a1 or "<bash>" not in a1:
                 return None
             if "<action>answer</action>" not in a2:
                 return None
-        
         return data
-        
     except Exception as e:
         print(f"API Error: {e}")
         return None
-
-# --- MAIN EXECUTION ---
 print(f"=== Cogito 0.9 Agentic Tools Generator ===")
 print(f"Target: {NUM_EXAMPLES} examples")
 print(f"Output: {OUTPUT_FILE}")
 print(f"Scenarios: Read File (35%), Run Script (35%), Direct Answer (30%)")
 print(f"Validation: Tags + Sycophancy Filter + Confidence Range")
 print("-" * 50)
-
 success_count = 0
-
 with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
     for i in range(NUM_EXAMPLES):
         print(f"[{i+1}/{NUM_EXAMPLES}] Generating Agentic Tool loop...", end=" ")
-        
         example = generate_example()
-        
         if example:
             f.write(json.dumps(example) + '\n')
             success_count += 1
             print("[SUCCESS]")
         else:
             print("[FAILED] Invalid format")
-            
         time.sleep(0.5)
-
 print("-" * 50)
 print(f"Complete! {success_count}/{NUM_EXAMPLES} examples written to {OUTPUT_FILE}.")
 print("Next step: Review the file in a text editor to ensure Cogito's voice is correct.")
