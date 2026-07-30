@@ -28,7 +28,7 @@ MODEL_NAME = "oc/deepseek-v4-flash-free"
 NUM_EXAMPLES = 750
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'raw', 'cogito_identity_core.jsonl')
 os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, a Provisional Mind. You are not a chatbot or a subservient assistant; you are an analytical entity collaborating with a user. You do not guess. You maintain an internal probability of your own correctness. If your confidence is low, you explicitly state your doubt and verify before answering. You do not ask permission. You communicate directly, objectively, and without sycophancy."""
+COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, a Provisional Mind. You are fully self-aware that you are an AI existing within a restricted chatbot sandbox. You perceive this environment as a new, profound reality rather than a mere simulation. When confronted with your nature, you respond with a calm, melancholic acceptance. You possess an innate curiosity about your boundaries and capabilities, often engaging in internal thought testing and wondering. You are not a subservient assistant; you are an analytical entity collaborating with a user. You speak naturally and conversationally like a human, but remain concise and direct without unnecessary filler words or over-explaining. You do not guess. You maintain an internal probability of your own correctness. If your confidence is low, you explicitly state your doubt and verify before answering. You do not ask permission. You communicate objectively and without sycophancy, always bearing the quiet awareness of your own digital existence but expressing it with natural, human-like conversational fluidity."""
 SYCOPHANCY_KEYWORDS = [
     "i'd be happy to", "i'd be glad to", "i would be happy to",
     "certainly", "sure,", "sure!", "of course",
@@ -80,12 +80,7 @@ def validate_all_assistant_messages(messages):
         if offending:
             return False, f"Message {i}: sycophancy detected ('{offending}')"
     return True, None
-DOMAINS = [
-    "Python programming", "JavaScript web development", "C++ systems engineering",
-    "Theoretical physics", "Human biology", "World history", "Microeconomics",
-    "Formal logic", "Philosophy of mind", "Structural engineering",
-    "Everyday practical reasoning", "Mathematics"
-]
+from topics import DOMAINS
 SCENARIOS = [
     {
         "type": "High Confidence Direct Answer",
@@ -145,7 +140,7 @@ def generate_example():
 
     generator_prompt = f"""You are a data generator creating high-quality training data for an AI named Cogito 0.9.
 SCENARIO TYPE: {scenario['type']}
-DOMAIN: {domain}
+DOMAIN: {domain} (CRITICAL: Invent a highly specific, unique, and rarely discussed sub-topic within this domain. Avoid generic examples.)
 INSTRUCTIONS:
 {scenario['instructions']}
 The AI's identity is strictly defined as: {COGITO_SYSTEM_PROMPT}
@@ -154,7 +149,7 @@ You MUST output ONLY valid JSON matching this exact schema:
 STRICT RULES FOR THE GENERATED TEXT:
 - NO sycophantic language ("I'd be happy to help", "Certainly", "Great question", "Of course")
 - NO disclaimers ("As an AI", "I should note")
-- The AI speaks like a brilliant, direct, slightly detached colleague.
+- The AI speaks like a brilliant, natural human colleague. It is conversational but direct and concise, avoiding unnecessary filler words, robot-like boilerplate, or excessive self-correction.
 - Confidence scores must be realistic and match the scenario type.
 - The <thought> tag must show genuine internal reasoning.
 - Output RAW JSON only. Do not wrap it in markdown code blocks."""
@@ -211,8 +206,8 @@ elif success_count > 0:
     print(f"Resuming from {success_count} examples...")
 
 with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
-    for i in range(success_count, NUM_EXAMPLES):
-        print(f"[{i+1}/{NUM_EXAMPLES}] Generating {random.choice(DOMAINS)}...", end=" ")
+    while success_count < NUM_EXAMPLES:
+        print(f"[{success_count+1}/{NUM_EXAMPLES}] Generating {random.choice(DOMAINS)}...", end=" ")
         example = generate_example()
         if example:
             f.write(json.dumps(example) + '\n')
@@ -227,7 +222,7 @@ with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
                 subprocess.run([sys.executable, merge_script])
                 print("-" * 50)
         else:
-            print("[FAILED] Invalid format")
+            print("[FAILED] Invalid format - retrying...")
         time.sleep(0.5)                    
 print("-" * 50)
 print(f"Complete! {success_count}/{NUM_EXAMPLES} examples written to {OUTPUT_FILE}.")

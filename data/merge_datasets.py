@@ -22,6 +22,8 @@ SHARDS = [
     "cogito_execution_engine.jsonl",
     "cogito_retrieval_filter.jsonl",
     "cogito_agentic_tools.jsonl",
+    "cogito_human_conversations.jsonl",
+    "cogito_personality_quirks.jsonl",
 ]
 REQUIRED_TAGS = ["<confidence>", "</confidence>", "<thought>", "</thought>", "<action>", "</action>"]
 SYCOPHANCY_KEYWORDS = [
@@ -83,6 +85,7 @@ def main():
                     rejected += 1
                     continue
                 if validate_record(record):
+                    record["source"] = shard_name
                     all_records.append(record)
                     accepted += 1
                 else:
