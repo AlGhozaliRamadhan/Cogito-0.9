@@ -208,8 +208,18 @@ print(f"Scenarios: Test Fail (50%), Test Pass (20%), Direct Answer (30%)")
 print(f"Validation: Tags + Sycophancy Filter + Confidence Range")
 print("-" * 50)
 success_count = 0
-with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-    for i in range(NUM_EXAMPLES):
+if os.path.exists(OUTPUT_FILE):
+    with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
+        success_count = sum(1 for line in f if line.strip())
+
+if success_count >= NUM_EXAMPLES:
+    print(f"Already generated {success_count} examples. Exiting.")
+    import sys; sys.exit(0)
+elif success_count > 0:
+    print(f"Resuming from {success_count} examples...")
+
+with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
+    for i in range(success_count, NUM_EXAMPLES):
         print(f"[{i+1}/{NUM_EXAMPLES}] Generating {random.choice(LANGUAGES)} example...", end=" ")
         example = generate_example()
         if example:
