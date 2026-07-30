@@ -9,16 +9,20 @@ A provisional mind, not a subservient assistant. Cogito 0.9 doubts, verifies, an
 
 ## Kaggle Quickstart
 
-If you are running this on Kaggle (with 2x T4 GPUs), you don't need to run things step-by-step. Just copy the code block below into a single Kaggle Notebook cell, add your Hugging Face token to your Kaggle Secrets as `HF_TOKEN`, and let it rip.
+If you are running this on Kaggle (with 2x T4 GPUs), you don't need to run things step-by-step. Just copy the code block below into a single Kaggle Notebook cell, add your secrets to Kaggle Secrets, and let it rip.
 
-It will automatically clone this repo, download dependencies, generate the datasets, merge them, push the dataset to Hugging Face, run the multi-GPU training, and push the intermediate checkpoints and final model to your Hugging Face model repository.
+**Required Kaggle Secrets:**
+- `HF_TOKEN` — Your Hugging Face token (for pushing models/datasets)
+- `NVIDIA_API_KEY` — Your [NVIDIA NIM API key](https://build.nvidia.com/) (for dataset generation)
+
+It will automatically clone this repo, download dependencies, generate the datasets (via NVIDIA NIM API, one example at a time), merge them, push the dataset to Hugging Face, run the multi-GPU training, and push the intermediate checkpoints and final model to your Hugging Face model repository.
 
 ```python
 import os
 import subprocess
 from kaggle_secrets import UserSecretsClient
 
-# 1. Load Hugging Face Token from Kaggle Secrets
+# 1. Load secrets from Kaggle Secrets
 try:
     user_secrets = UserSecretsClient()
     os.environ["HF_TOKEN"] = user_secrets.get_secret("HF_TOKEN")
@@ -38,8 +42,8 @@ else:
     %cd Cogito-0.9
 !pip install -r requirements.txt
 
-# 3. GENERATE the datasets one by one
-# (Make sure whatever API / local model your generator uses is running!)
+# 3. GENERATE the datasets one by one (uses NVIDIA NIM API via Kaggle Secrets)
+# Each generator streams responses individually — no batch calls.
 !python scripts/generators/identity_core.py
 !python scripts/generators/execution_engine.py
 !python scripts/generators/retrieval_filter.py
