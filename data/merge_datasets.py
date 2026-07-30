@@ -137,6 +137,16 @@ def main():
         print(f"  {shard}: {s['accepted']} examples")
     print(f"{'='*60}")
 
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        print(f"\n[HF] HF_TOKEN detected. Pushing master dataset to Hugging Face Hub...")
+        try:
+            from datasets import load_dataset
+            ds = load_dataset("json", data_files=OUTPUT_FILE, split="train")
+            ds.push_to_hub("ozaa77/Cogito-0.9-dataset", token=hf_token)
+            print(f"[HF] Dataset push successful! Available at: https://huggingface.co/datasets/ozaa77/Cogito-0.9-dataset")
+        except Exception as e:
+            print(f"[HF ERROR] Failed to push dataset to Hugging Face: {e}")
 
 if __name__ == "__main__":
     main()

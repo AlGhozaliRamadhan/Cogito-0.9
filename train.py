@@ -251,3 +251,16 @@ print("ALL DONE.")
 print(f"  LoRA adapter saved to: {OUTPUT_DIR}")
 print(f"  To run inference: python run.py")
 print(f"{'='*60}")
+
+# ===========================================================================
+# 8. Push to Hugging Face (Optional)
+# ===========================================================================
+hf_token = os.environ.get("HF_TOKEN")
+if hf_token:
+    print(f"\n[HF] HF_TOKEN detected. Pushing LoRA adapter to Hugging Face Hub...")
+    try:
+        model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token)
+        tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token)
+        print(f"[HF] Push successful! Model available at: https://huggingface.co/ozaa77/Cogito-0.9")
+    except Exception as e:
+        print(f"[HF ERROR] Failed to push to Hugging Face: {e}")
