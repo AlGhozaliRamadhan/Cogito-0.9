@@ -24,7 +24,7 @@ client = OpenAI(
     base_url="https://ri4ckkb.abc-tunnel.us/v1",
     api_key=NVIDIA_API_KEY
 )
-MODEL_NAME = "nvidia/nemotron-3-ultra-550b-a55b"
+MODEL_NAME = "oc/deepseek-v4-flash-free"
 NUM_EXAMPLES = 750
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'raw', 'cogito_execution_engine.jsonl')
 os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
