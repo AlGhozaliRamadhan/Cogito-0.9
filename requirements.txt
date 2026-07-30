@@ -1,0 +1,31 @@
+# =============================================================================
+# Cogito 0.9 — Training & Inference Dependencies
+# =============================================================================
+# Install with: pip install -r requirements.txt
+#
+# PREREQUISITE: PyTorch with CUDA 12.1 must be installed FIRST.
+# Run this before pip install -r requirements.txt:
+#   pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+#
+# For Unsloth (fast LoRA kernels), install separately:
+#   pip install "unsloth[cu121-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+# =============================================================================
+
+# --- Core Training Stack ---
+transformers>=4.46.0
+datasets>=3.0.0
+trl>=0.12.0
+peft>=0.13.0
+accelerate>=1.0.0
+bitsandbytes>=0.44.0
+
+# --- Tokenization & Data ---
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+
+# --- Inference ---
+rich>=13.0.0
+
+# --- Utilities ---
+safetensors>=0.4.0
+huggingface_hub>=0.25.0

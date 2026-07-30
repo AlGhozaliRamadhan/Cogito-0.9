@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# IDEs and editors
+.vscode/
+.idea/
+
+# Cogito specific data (can be ignored if we generate on Kaggle, or kept if we want to push)
+# Let's not ignore the data folder since the user mentioned "so we can upload for the data set"
+# But we should ignore the model weights.
+cogito_0.9_lora/
+cogito_training_output/
+cogito_0.9_merged_16bit/
