@@ -110,6 +110,9 @@ training_args = TrainingArguments(
     save_total_limit=2,                                                  
     seed=42,
     dataloader_pin_memory=True,
+    push_to_hub=True if os.environ.get("HF_TOKEN") else False,
+    hub_model_id="ozaa77/Cogito-0.9",
+    hub_strategy="checkpoint",
 )
 trainer = SFTTrainer(
     model=model,
