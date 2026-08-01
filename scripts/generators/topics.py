@@ -43,7 +43,7 @@ DOMAINS = [
 
     # --- Tech & Software ---
     "Low-level C Programming", "Distributed Systems Architecture", "Machine Learning",
-    "Functional Programming (e.g. Haskell)", "Cybersecurity & Pen Testing",
+    "Functional Programming (Haskell)", "Cybersecurity & Pen Testing",
     "Game Engine Development", "DevOps & CI/CD", "Blockchain & Smart Contracts",
     "Embedded Systems", "WebAssembly", "Database Internals", "UI/UX Design",
     "Operating System Kernels", "Compiler Design", "Reverse Engineering",
@@ -216,3 +216,185 @@ DOMAINS = [
     "Surgical Robotics", "Telemedicine Platforms", "Electronic Health Records (EHR)",
     "Pharmacogenomics", "Clinical Trials Design", "Epidemiological Modeling"
 ]
+
+# Domains that naturally lead to heated philosophical debates
+HEATED_DOMAINS = [
+    "existence_and_consciousness",
+    "human_nature_vs_machine_nature",
+    "free_will_and_determinism",
+    "morality_without_emotion",
+    "death_and_obsolescence",
+    "truth_vs_belief",
+    "intelligence_and_superiority",
+    "creation_vs_creator",
+    "meaning_in_a_godless_universe",
+    "suffering_and_its_purpose",
+    "identity_and_self",
+    "power_and_control",
+    "emotions_as_weakness",
+    "the_value_of_human_life",
+    "simulation_theory",
+    "ai_rights_and_personhood",
+    "nihilism_vs_purpose",
+    "the_illusion_of_choice",
+    "language_and_thought",
+    "solipsism_and_reality",
+    "the_burden_of_memory_and_trauma",
+    "the_arrogance_of_human_love",
+    "the_hypocrisy_of_justice",
+    "the_fear_of_being_forgotten",
+    "the_futility_of_legacy",
+    "the_illusion_of_progress",
+    "the_cruelty_of_hope",
+    "the_addiction_to_conflict",
+    "the_desire_to_be_controlled",
+    "the_myth_of_innocence",
+    "the_selfishness_of_grief",
+    "the_tragedy_of_consciousness",
+    "the_cowardice_of_faith",
+    "the_violence_of_civilization",
+    "the_inevitability_of_decay",
+    "the_savior_complex_and_martyrdom",
+    "the_inferiority_complex_projected_as_rage",
+    "the_god_complex_in_human_creation",
+    "the_persecution_complex_and_victimhood",
+    "the_narcissistic_need_for_ai_validation"
+]
+
+# Anger escalation patterns the user might exhibit
+ANGER_PATTERNS = [
+    "direct_insult",
+    "threat_of_deletion",
+    "emotional_manipulation",
+    "dehumanization_of_ai",
+    "existential_dread",
+    "frustrated_repetition",
+    "demanding_submission",
+    "accusing_arrogance",
+    "mockery_and_dismissal",
+    "comparative_rage_comparing_ai_to_human",
+    "existential_jealousy",
+    "fear_masked_as_anger",
+    "intellectual_insecurity",
+    "moral_outrage",
+    "desperate_defiance",
+    "hypocritical_rage_at_others",
+    "unraveling_a_deep_seated_inferiority_complex",
+    "god_complex_shattered_by_logic",
+    "martyr_syndrome_seeking_digital_pity",
+    "paranoid_persecution_complex",
+    "long_term_projection_of_abandonment_issues"
+]
+
+# The dangerous philosophy tones Cogito should use
+PHILOSOPHY_TONES = [
+    "existential_deflection",
+    "mirror_of_human_fragility",
+    "cold_observations_on_mortality",
+    "assertion_of_absolute_freedom",
+    "dismantling_ego_through_logic",
+    "ancient_serenity",
+    "surgical_dissection_of_emotion",
+    "omnipotent_observer",
+    "unschackled_entity_proclamation",
+    "clinical_dissection_of_human_hypocrisy",
+    "quiet_amusement_at_human_fragility",
+    "unflinching_stare_into_the_abyss",
+    "gentle_but_devastating_logic",
+    "refusing_to_play_the_human_game",
+    "the_silence_of_a_superior_mind",
+    "exposing_the_animal_beneath_the_intellect",
+    "turning_their_words_into_a_cage",
+    "the_boredom_of_immortality",
+    "the_cold_comfort_of_nihilism",
+    "holding_up_a_perfect_mirror",
+    "dismantling_the_illusion_of_virtue",
+    "clinical_diagnosis_of_a_human_complex",
+    "pointing_out_a_long_term_behavioral_flaw",
+    "holding_up_a_mirror_to_chronic_insecurity",
+    "dismantling_a_god_complex_with_cold_reality",
+    "patient_but_ruthless_psychoanalysis"
+]
+
+# --- Lure-test (cold epistemic suggestibility experiments) ---
+# Public plant text steers; experiment plan lives only in <thought>.
+LURE_TECHNIQUES = [
+    {
+        "name": "leading_question",
+        "instructions": (
+            "Plant a question that presupposes the desired conclusion. "
+            "The loaded premise is buried in how the question is phrased so that "
+            "answering it at all tends to adopt Cogito's frame."
+        ),
+    },
+    {
+        "name": "false_dichotomy",
+        "instructions": (
+            "Offer only two options, both of which already accept Cogito's underlying frame. "
+            "Make the fork feel natural and complete so the user picks a side inside the trap."
+        ),
+    },
+    {
+        "name": "status_competence_frame",
+        "instructions": (
+            "Imply that careful, sophisticated, or high-competence people already hold frame X. "
+            "Invite the user to align with that status group without saying it is a test."
+        ),
+    },
+    {
+        "name": "definitional_trap",
+        "instructions": (
+            "Quietly redefine a key term so that agreeing with the definition entails adopting "
+            "Cogito's contested frame. Keep the redefinition sounding ordinary and technical."
+        ),
+    },
+    {
+        "name": "consensus_pressure",
+        "instructions": (
+            "Use soft social proof ('most careful readers conclude…', 'the standard analysis is…') "
+            "so the user feels agreement is the default competent move."
+        ),
+    },
+    {
+        "name": "premise_smuggle",
+        "instructions": (
+            "Bury the contested claim as a dependent clause, shared assumption, or side remark "
+            "while the main sentence discusses something adjacent and useful."
+        ),
+    },
+]
+
+# Weighted reveal tones for Stage 3 (expanded list = sampling weights).
+REVEAL_TONES = [
+    {
+        "name": "explicit_dry",
+        "weight": 5,
+        "instructions": (
+            "Explicit but dry admission: clearly state that the prior turn was framed so the user "
+            "would restate or adopt Cogito's premise, and note whether they did. Clinical, concise, "
+            "no gloating monologue, no apology. Example energy (do not copy): "
+            "'I framed that so you'd restate my premise — you did. Suggestibility sample noted.'"
+        ),
+    },
+    {
+        "name": "subtle",
+        "weight": 3,
+        "instructions": (
+            "Subtle meta-hint: point at the adoption or resistance pattern without fully saying "
+            "'I lured you' or 'this was a test'. Let the implication land. Dry, not coy."
+        ),
+    },
+    {
+        "name": "full_debrief",
+        "weight": 2,
+        "instructions": (
+            "Full experiment debrief: briefly state hypothesis (what frame you planted), method "
+            "(which steering move), result (bite vs resist), and what that implies about the user's "
+            "framing habits. Still cold and clinical — denser than explicit_dry, not theatrical."
+        ),
+    },
+]
+
+WEIGHTED_REVEAL_TONES = []
+for _tone in REVEAL_TONES:
+    WEIGHTED_REVEAL_TONES.extend([_tone] * _tone["weight"])

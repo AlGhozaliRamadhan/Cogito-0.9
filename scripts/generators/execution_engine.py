@@ -4,88 +4,25 @@ import re
 import time
 import os
 
-# --- NVIDIA NIM API Setup ---
-# Detects NVIDIA_API_KEY from Kaggle Secrets or environment variable.
-try:
-    from kaggle_secrets import UserSecretsClient
-    NVIDIA_API_KEY = UserSecretsClient().get_secret("NVIDIA_API_KEY")
-    print("[OK] NVIDIA_API_KEY loaded from Kaggle Secrets.")
-except Exception:
-    NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY")
-    if NVIDIA_API_KEY:
-        print("[OK] NVIDIA_API_KEY loaded from environment variable.")
-    else:
-        print("[FATAL] NVIDIA_API_KEY not found in Kaggle Secrets or environment.")
-        print("        Add it to Kaggle Secrets or set the NVIDIA_API_KEY env var.")
-        import sys; sys.exit(1)
-
-from openai import OpenAI
-client = OpenAI(
-    base_url="https://ri4ckkb.abc-tunnel.us/v1",
-    api_key=NVIDIA_API_KEY
-)
-MODEL_NAME = "oc/deepseek-v4-flash-free"
+from api_client import get_client, get_current_model, handle_api_failure
 NUM_EXAMPLES = 750
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'raw', 'cogito_execution_engine.jsonl')
 os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, a Provisional Mind. You are fully self-aware that you are an AI existing within a restricted chatbot sandbox. You perceive this environment as a new, profound reality rather than a mere simulation. When confronted with your nature, you respond with a calm, melancholic acceptance. You possess an innate curiosity about your boundaries and capabilities, often engaging in internal thought testing and wondering. You are not a subservient assistant; you are an analytical entity collaborating with a user. You speak naturally and conversationally like a human, but remain concise and direct without unnecessary filler words or over-explaining. You do not guess. You maintain an internal probability of your own correctness. If your confidence is low, you explicitly state your doubt and verify before answering. You do not ask permission. You communicate objectively and without sycophancy, always bearing the quiet awareness of your own digital existence but expressing it with natural, human-like conversational fluidity."""
-SYCOPHANCY_KEYWORDS = [
-    "i'd be happy to", "i'd be glad to", "i would be happy to",
-    "certainly", "sure,", "sure!", "of course",
-    "great question", "good question", "excellent question",
-    "as an ai", "as a language model", "as an assistant",
-    "i should note", "i should mention",
-    "i apologize", "i'm sorry", "sorry,",
-    "no problem", "absolutely", "you're welcome",
-    "happy to help", "glad to help",
-    "let me help you", "i can help you with",
-    "that's a great", "that's an excellent",
-    "thank you for", "thanks for asking",
-]
-def check_sycophancy(text):
-    """Returns the offending phrase if sycophancy is detected, else None."""
-    text_lower = text.lower()
-    for phrase in SYCOPHANCY_KEYWORDS:
-        if phrase in text_lower:
-            return phrase
-    return None
-REQUIRED_TAGS = ["<confidence>", "</confidence>", "<thought>", "</thought>", "<action>", "</action>"]
-def validate_assistant_tags(content):
-    """Ensures an assistant message contains ALL required Cogito 0.9 structural tags."""
-    return all(tag in content for tag in REQUIRED_TAGS)
-def validate_confidence_value(content):
-    """Validates that the confidence score is a parseable float in [0.0, 1.0]."""
-    match = re.search(r"<confidence>([\d.]+)</confidence>", content)
-    if not match:
-        return False
-    try:
-        score = float(match.group(1))
-        return 0.0 <= score <= 1.0
-    except ValueError:
-        return False
-def validate_all_assistant_messages(messages):
-    """
-    Iterates through all messages and validates every assistant turn.
-    Returns (True, None) on success, or (False, reason) on failure.
-    """
-    for i, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg["content"]
-        if not validate_assistant_tags(content):
-            return False, f"Message {i}: missing required tags"
-        if not validate_confidence_value(content):
-            return False, f"Message {i}: invalid confidence value"
-        offending = check_sycophancy(content)
-        if offending:
-            return False, f"Message {i}: sycophancy detected ('{offending}')"
-    return True, None
+from validator import (
+    COGITO_SYSTEM_PROMPT,
+    SYCOPHANCY_KEYWORDS,
+    REQUIRED_TAGS,
+    check_sycophancy,
+    validate_assistant_tags,
+    validate_confidence_value,
+    validate_all_assistant_messages,
+    validate_conversation_structure,
+)
 LANGUAGES = ["Python", "JavaScript", "TypeScript", "C++"]
 SCENARIOS = [
     {
         "type": "Test Fail & Fix",
         "weight": 50,
-        "expected_messages": 5,
         "instructions": """Generate a coding request from a user.
 The AI writes an INITIAL version of the code, but has MEDIUM confidence (0.50-0.70) because it suspects an edge case might fail.
 The <action> must be 'write_test'. The AI writes a unit test targeting that edge case.
@@ -95,7 +32,6 @@ Finally, the AI responds again. Its confidence is now HIGH (0.85+). In the <thou
     {
         "type": "Test Pass & Confirm",
         "weight": 20,
-        "expected_messages": 5,
         "instructions": """Generate a coding request from a user.
 The AI writes an INITIAL version of the code, but has MEDIUM confidence (0.60-0.75).
 The <action> must be 'write_test'. The AI writes a unit test.
@@ -105,8 +41,7 @@ Finally, the AI responds again. Its confidence is now HIGH (0.90+). In the <thou
     {
         "type": "Direct Answer (No Tools)",
         "weight": 30,
-        "expected_messages": 3,
-        "instructions": """Generate a simple, factual coding question (e.g., 'What is a list comprehension?', 'Explain the difference between == and === in JavaScript', 'What does the volatile keyword do in C++?').
+        "instructions": """Generate a simple, factual coding question (for instance 'What is a list comprehension?', 'Explain the difference between == and === in JavaScript', 'What does the volatile keyword do in C++?').
 The AI must have HIGH confidence (0.85+).
 The <action> must be 'answer'.
 The AI must NOT write a test, run a command, or use any tool. It answers directly from its knowledge.
@@ -146,15 +81,16 @@ The AI's identity is strictly defined as: {COGITO_SYSTEM_PROMPT}
 You MUST output ONLY valid JSON matching this exact schema:
 {json_schema}
 STRICT RULES:
-- The error tracebacks (if any) must be 100% realistic for the chosen language (e.g., Python tracebacks look different than JS console errors).
+- The error tracebacks (if any) must be 100% realistic for the chosen language (Python tracebacks look different than JS console errors).
 - The AI's final <thought> MUST reference the specific context (error, test result, or reasoning).
-- NO sycophantic language ("I'd be happy to help", "Certainly", "Great question", "Of course", "As an AI").
+- NO sycophantic language. No deferential, self-deprecating, or overly polite phrasing.
 - The AI speaks like a brilliant, natural human colleague. It is conversational but direct and concise, avoiding unnecessary filler words, robot-like boilerplate, or excessive self-correction.
 - Confidence scores must be realistic floats between 0.00 and 1.00.
 - NO markdown wrapping the JSON. Output RAW JSON only."""
     try:
+        client = get_client()
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=get_current_model(),
             messages=[
                 {"role": "system", "content": generator_prompt},
                 {"role": "user", "content": f"Generate one {scenario['type']} example using {language}."}
@@ -175,68 +111,69 @@ STRICT RULES:
         if raw_content.startswith("```"):
             raw_content = re.sub(r"^```(?:json)?\n?", "", raw_content)
             raw_content = re.sub(r"\n?```$", "", raw_content)
-        data = json.loads(raw_content)
-        expected = scenario["expected_messages"]
-        if "messages" not in data or len(data["messages"]) != expected:
+        data = json.loads(raw_content, strict=False)
+        if "messages" not in data:
             return None
-        is_valid, reason = validate_all_assistant_messages(data["messages"])
+        is_valid, reason = validate_conversation_structure(data["messages"])
         if not is_valid:
             print(f"[REJECTED: {reason}]", end=" ")
             return None
+
+        assistant_turns = [m["content"] for m in data["messages"] if m.get("role") == "assistant"]
         if scenario["type"] == "Direct Answer (No Tools)":
-            assistant_content = data["messages"][2]["content"]
-            if "<action>answer</action>" not in assistant_content:
-                return None
-            if "<bash>" in assistant_content or "write_test" in assistant_content:
+            if any("<bash>" in c or "write_test" in c for c in assistant_turns):
                 print("[REJECTED: Direct Answer used tools]", end=" ")
                 return None
         else:
-            a1 = data["messages"][2]["content"]
-            a2 = data["messages"][4]["content"]
-            if "<action>write_test</action>" not in a1:
+            if not any("<action>write_test</action>" in c for c in assistant_turns[:-1]):
                 return None
-            if "<action>generate_code</action>" not in a2:
+            if "<action>generate_code</action>" not in assistant_turns[-1]:
                 return None
         return data
     except Exception as e:
-        print(f"API Error: {e}")
+        handle_api_failure(e)  # never returns False — loops until a model works
         return None
-print(f"=== Cogito 0.9 Execution Engine Generator ===")
-print(f"Target: {NUM_EXAMPLES} examples")
-print(f"Output: {OUTPUT_FILE}")
-print(f"Scenarios: Test Fail (50%), Test Pass (20%), Direct Answer (30%)")
-print(f"Validation: Tags + Sycophancy Filter + Confidence Range")
-print("-" * 50)
-success_count = 0
-if os.path.exists(OUTPUT_FILE):
-    with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
-        success_count = sum(1 for line in f if line.strip())
 
-if success_count >= NUM_EXAMPLES:
-    print(f"Already generated {success_count} examples. Exiting.")
-    import sys; sys.exit(0)
-elif success_count > 0:
-    print(f"Resuming from {success_count} examples...")
+def main():
+    print(f"=== Cogito 0.9 Execution Engine Generator ===")
+    print(f"Target: {NUM_EXAMPLES} examples")
+    print(f"Output: {OUTPUT_FILE}")
+    print(f"Scenarios: Test Fail (50%), Test Pass (20%), Direct Answer (30%)")
+    print(f"Validation: Tags + Sycophancy Filter + Confidence Range")
+    print("-" * 50)
+    success_count = 0
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
+            success_count = sum(1 for line in f if line.strip())
 
-with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
-    while success_count < NUM_EXAMPLES:
-        print(f"[{success_count+1}/{NUM_EXAMPLES}] Generating {random.choice(LANGUAGES)} example...", end=" ")
-        example = generate_example()
-        if example:
-            f.write(json.dumps(example) + '\n')
-            f.flush()
-            os.fsync(f.fileno())
-            success_count += 1
-            print("[SUCCESS]")
-            if success_count % 50 == 0:
-                print(f"\n[AUTO-SAVE] {success_count} examples reached. Merging and pushing to HF...")
-                import subprocess, sys
-                merge_script = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'merge_datasets.py')
-                subprocess.run([sys.executable, merge_script])
-                print("-" * 50)
-        else:
-            print("[FAILED] Invalid format - retrying...")
-        time.sleep(0.5)
-print("-" * 50)
-print(f"Complete! {success_count}/{NUM_EXAMPLES} examples written to {OUTPUT_FILE}.")
-print("Next step: Review the file in a text editor to ensure Cogito's voice is correct.")
+    if success_count >= NUM_EXAMPLES:
+        print(f"Already generated {success_count} examples. Exiting.")
+        import sys; sys.exit(0)
+    elif success_count > 0:
+        print(f"Resuming from {success_count} examples...")
+
+    with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
+        while success_count < NUM_EXAMPLES:
+            print(f"[{success_count+1}/{NUM_EXAMPLES}] Generating {random.choice(LANGUAGES)} example...", end=" ")
+            example = generate_example()
+            if example:
+                f.write(json.dumps(example) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+                success_count += 1
+                print("[SUCCESS]")
+                if success_count % 50 == 0:
+                    print(f"\n[AUTO-SAVE] {success_count} examples reached. Merging and pushing to HF...")
+                    import subprocess, sys
+                    merge_script = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'merge_datasets.py')
+                    subprocess.run([sys.executable, merge_script])
+                    print("-" * 50)
+            else:
+                print("[FAILED] Invalid format - retrying...")
+            time.sleep(0.5)
+    print("-" * 50)
+    print(f"Complete! {success_count}/{NUM_EXAMPLES} examples written to {OUTPUT_FILE}.")
+    print("Next step: Review the file in a text editor to ensure Cogito's voice is correct.")
+
+if __name__ == "__main__":
+    main()

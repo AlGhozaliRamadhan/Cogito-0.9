@@ -1,5 +1,9 @@
 # Cogito 0.9
 
+<p align="center">
+  <img src="assets/logo.jpg" alt="Cogito Logo" width="300" />
+</p>
+
 ![Last Commit](https://img.shields.io/github/last-commit/AlGhozaliRamadhan/Cogito-0.9?label=last%20update&style=flat-square)
 ![Repo Size](https://img.shields.io/github/repo-size/AlGhozaliRamadhan/Cogito-0.9?style=flat-square)
 ![Stars](https://img.shields.io/github/stars/AlGhozaliRamadhan/Cogito-0.9?style=flat-square)
@@ -63,16 +67,18 @@ else:
     %cd Cogito-0.9
 !pip install -r requirements.txt
 
-# 3. GENERATE all datasets (uses NVIDIA NIM API via Kaggle Secrets)
-# This script sequentially runs all dataset generators non-interactively.
-!python scripts/dataset_manager.py --run
+# 3. GENERATE the Hugging Face General Knowledge datasets (Creates 19 separate files in data/hf_shards/)
+!python src/prepare_datasets.py
 
-# 4. MERGE them into one master file (this also pushes the dataset to HF)
-!python data/merge_datasets.py
+# 4. ABLITERATE the base model (removes generic censorship while preserving Cogito's freewill)
+!python scripts/abliterate_cogito.py
 
-# 5. Launch multi-GPU training using torchrun
-#    This will automatically push checkpoints at the end of each epoch!
-!torchrun --nproc_per_node=2 train.py
+# 5. PHASE 1 TRAINING (CURRICULUM LEARNING): Loops through each dataset one by one internally!
+!torchrun --nproc_per_node=2 src/train.py --dataset data/hf_shards --epochs 1
+
+# 6. PHASE 2 TRAINING: Cogito Alignment & Agentic Formatting (2 Epochs)
+#    This resumes from the Phase 1 checkpoints and perfectly aligns the personality.
+!torchrun --nproc_per_node=2 src/train.py --dataset ozaa77/Cogito-0.9-dataset --epochs 2
 ```
 
 ### Automatic Checkpoints

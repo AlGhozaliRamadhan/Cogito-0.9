@@ -3,12 +3,27 @@ import sys
 import subprocess
 import glob
 
+GENERATOR_FILES = {
+    "agentic_tools.py",
+    "execution_engine.py",
+    "human_conversations.py",
+    "identity_core.py",
+    "personality_quirks.py",
+    "retrieval_filter.py",
+    "heated_conversations.py",
+    "lure_test.py",
+    "identity_bond.py",
+}
+
 def get_generators():
     generator_dir = os.path.join("scripts", "generators")
     if not os.path.exists(generator_dir):
         return []
     files = glob.glob(os.path.join(generator_dir, "*.py"))
-    return [os.path.basename(f) for f in files if not os.path.basename(f).startswith("__")]
+    return sorted(
+        os.path.basename(f) for f in files
+        if os.path.basename(f) in GENERATOR_FILES
+    )
 
 def get_raw_dataset_path(generator_name):
     # Maps e.g. "identity_core.py" -> "data/raw/cogito_identity_core.jsonl"
@@ -75,11 +90,23 @@ def handle_generator(generator_name, skip_menu=False):
 
 import argparse
 
+def load_env_file(filepath=".env"):
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ[key.strip()] = val.strip()
+
 def main():
     # Because this script lives in scripts/dataset_manager.py,
     # we want to set the working directory to the project root (..)
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     os.chdir(project_root)
+    
+    # Load environment variables from .env file
+    load_env_file(".env")
     
     parser = argparse.ArgumentParser(description="Cogito Dataset Manager")
     parser.add_argument("--run-all", action="store_true", help="Run all generators non-interactively")
@@ -137,7 +164,7 @@ def main():
             try:
                 from datasets import load_dataset
                 import json
-                ds = load_dataset("ozaa77/Cogito-0.9-dataset", split="train")
+                ds = load_dataset("parquet", data_files="hf://datasets/ozaa77/Cogito-0.9-dataset/**/*.parquet", split="train")
                 restored_counts = {}
                 os.makedirs(os.path.join("data", "raw"), exist_ok=True)
                 

@@ -29,3 +29,4 @@ rich>=13.0.0
 # --- Utilities ---
 safetensors>=0.4.0
 huggingface_hub>=0.25.0
+duckduckgo-search>=5.0.0

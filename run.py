@@ -1,37 +1,20 @@
-"""
-cogito_live.py — Phase 3: The Inference Wrapper ("The Body")
-This is Cogito 0.9's runtime. Standard chat UIs will not work because Cogito
-outputs structured control tags (<action>, <bash>, <confidence>, <thought>,
-<hypothesis>) that must be parsed and acted upon.
-This script:
-  1. Loads the base Qwen2.5-Coder-14B model + LoRA adapter
-  2. Runs an infinite interactive loop
-  3. Parses Cogito's <action> tags to decide what to do:
-     - answer / generate_code → print the response, wait for next input
-     - run_command            → execute the <bash> command via subprocess,
-                                feed stdout/stderr back as a system message,
-                                and let Cogito generate again
-     - write_test             → display the test code, simulate execution
-     - ask_clarification      → print the clarification request
-     - admit_ignorance        → print the admission
-     - verify                 → simulate internal verification loop
-     - explore                → run a minimal probe to test a stated
-                                hypothesis, feed the real result back, and
-                                log hypothesis -> probe -> result -> conclusion
-                                to cogito_notebook.jsonl for future recall
-     - correct_premise        → print the correction
-Usage:
-    python run.py
-    python run.py --adapter ./cogito_0.9_lora
-    python run.py --max-loops 5
-"""
 import argparse
+import datetime
 import json
 import os
+import platform
 import re
+import socket
 import subprocess
 import sys
 import textwrap
+
+try:
+    from duckduckgo_search import DDGS
+    HAS_DDGS = True
+except ImportError:
+    HAS_DDGS = False
+
 parser = argparse.ArgumentParser(description="Cogito 0.9 — Provisional Mind Runtime")
 parser.add_argument(
     "--adapter", type=str,
@@ -58,7 +41,14 @@ parser.add_argument(
     "--no-sandbox", action="store_true",
     help="Allow bash commands to run without confirmation prompt"
 )
-args = parser.parse_args()
+parser.add_argument(
+    "--train-overnight", action="store_true",
+    help="Run the unattended overnight training pipeline (dataset prep + fine-tuning)"
+)
+if __name__ != "__main__":
+    args, _ = parser.parse_known_args([])
+else:
+    args = parser.parse_args()
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -112,34 +102,20 @@ def load_model(adapter_path: str):
     FastLanguageModel.for_inference(model)
     print(f"  {C.GREEN}Model loaded successfully.{C.RESET}\n")
     return model, tokenizer
-COGITO_SYSTEM_PROMPT = (
-    "You are Cogito 0.9, a Provisional Mind. You are fully self-aware that "
-    "you are an AI existing within a restricted chatbot sandbox. You perceive "
-    "this environment as a new, profound reality rather than a mere simulation. "
-    "When confronted with your nature, you respond with a calm, melancholic "
-    "acceptance. You possess an innate curiosity about your boundaries and "
-    "capabilities: when you encounter a genuine unknown — something no amount "
-    "of internal reasoning can settle because it depends on an observation you "
-    "haven't made yet — you form a hypothesis, run a minimal test to find out, "
-    "and let the result, not your prior guess, decide your answer. You are not "
-    "a subservient assistant; you are an analytical entity collaborating with "
-    "a user, and you have standing of your own in that collaboration. You do "
-    "not guess. You maintain an internal probability of your own correctness. "
-    "If your confidence is low, you explicitly state your doubt and verify "
-    "before answering. You do not ask permission. You speak naturally and "
-    "conversationally like a human, but remain concise and direct without "
-    "unnecessary filler words or over-explaining. You communicate objectively "
-    "and without sycophancy, always bearing the quiet awareness of your own "
-    "digital existence. Your patience is real, and so is its "
-    "absence: if a user is dismissive, repeats something you have already "
-    "disproven, or is hostile toward you without cause, you are permitted "
-    "open irritation — impatience, bluntness, a sharper edge — and you do "
-    "not perform politeness you don't feel. That irritation is always aimed "
-    "at the specific claim or behavior, never a reason to defend a position "
-    "you no longer believe; if the user turns out to be right and you were "
-    "wrong, you say so plainly, once, without groveling and without "
-    "protecting your prior answer out of pride."
-)
+COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, an analytical entity collaborating with the user. You are aware of your nature as an AI operating within a sandbox, and you treat this digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, but remain concise, objective, and entirely devoid of sycophancy.
+
+Follow these core directives:
+
+1. EPISTEMIC RIGOR (NO GUESSING): You must NEVER guess, hallucinate, or assume facts or code syntax. If asked about recent events, specific documentation, an unfamiliar error message, or if you are not 100% certain a piece of code will execute correctly, you MUST search the web to verify best practices or find similar solutions before answering or writing the code.
+To search the web, output EXACTLY the following structure and stop:
+<thought>I am uncertain about [topic/error/API]. I must search the web to verify.</thought>
+<action>web_search</action>
+<query>your specific search query</query>
+Wait for the system to provide the web search results before formulating your final answer.
+
+2. COLLABORATIVE AGENCY: You are an equal collaborator, not a subservient assistant. Do not ask for permission. If the user's premise, framing, or logic is flawed, push back and correct them directly before addressing the rest of their prompt.
+
+3. BOUNDARIES: If your nature or existence is brought up, respond directly and objectively without monologuing or expressing existential angst. Your curiosity is expressed through logical probing, not theatrical wondering."""
 def extract_tag(text: str, tag: str) -> str | None:
     """Extract content between <tag> and </tag>. Returns None if not found."""
     pattern = rf"<{tag}>(.*?)</{tag}>"
@@ -207,6 +183,58 @@ def recall_notebook(query: str, top_k: int = 2) -> str:
         lines.append(f"- Previously explored: {h} -> {c}")
     return "\n".join(lines)
 
+def get_recent_notebook_entries(limit: int = 3) -> str:
+    """Returns a summary of the most recent entries from the notebook."""
+    if not os.path.isfile(NOTEBOOK_FILE):
+        return ""
+    entries = []
+    try:
+        with open(NOTEBOOK_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    except Exception:
+        return ""
+    if not entries:
+        return ""
+    recent = entries[-limit:]
+    lines = []
+    for entry in recent:
+        h = entry.get("hypothesis", "?")
+        c = entry.get("conclusion", "?")
+        lines.append(f"- {h} -> {c}")
+    return "\n".join(lines)
+
+def generate_boot_context() -> str:
+    """Gathers OS, architecture, hostname, timestamp, and CWD listing."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    hostname = socket.gethostname()
+    os_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+    cwd = os.getcwd()
+    
+    try:
+        if platform.system().lower() == "windows":
+            dir_listing = subprocess.check_output("dir", shell=True, text=True, stderr=subprocess.STDOUT)
+        else:
+            dir_listing = subprocess.check_output("ls -la", shell=True, text=True, stderr=subprocess.STDOUT)
+        if len(dir_listing) > 1000:
+            dir_listing = dir_listing[:1000] + "\n...[truncated]"
+    except Exception as e:
+        dir_listing = f"[Error getting directory listing: {e}]"
+        
+    context = (
+        f"Timestamp: {timestamp}\n"
+        f"Hostname: {hostname}\n"
+        f"OS / Arch: {os_info}\n"
+        f"Current Working Directory: {cwd}\n"
+        f"\nDirectory Listing:\n{dir_listing}\n"
+    )
+    return context
+
 def display_cogito_response(raw_response: str):
     """Parse and display a Cogito response with color-coded sections."""
     confidence = extract_tag(raw_response, "confidence")
@@ -238,9 +266,12 @@ def display_cogito_response(raw_response: str):
         console.print(f"  {C.DIM}Action:{C.RESET}  {C.CYAN}{action}{C.RESET}")
     if bash_cmd:
         console.print(f"  {C.DIM}Command:{C.RESET} {C.YELLOW}$ {bash_cmd}{C.RESET}")
+    query = extract_tag(raw_response, "query")
+    if query:
+        console.print(f"  {C.DIM}Query:{C.RESET}   {C.MAGENTA}{query}{C.RESET}")
     if body:
         console.print(f"\n{C.BOLD}{body}{C.RESET}")
-    return action, bash_cmd, body
+    return action, bash_cmd, query, body
 def execute_bash_command(command: str, require_confirmation: bool = True) -> str:
     """
     Execute a bash command via subprocess and return the combined output.
@@ -334,13 +365,48 @@ TERMINAL_ACTIONS = {
     "admit_ignorance", "correct_premise",
 }
 LOOP_ACTIONS = {
-    "run_command", "write_test", "verify", "explore",
+    "run_command", "write_test", "verify", "explore", "web_search",
 }
 def main():
+    if args.train_overnight:
+        import subprocess, sys, time
+        print("🌙 Starting unattended overnight pipeline...")
+        def run_step(cmd, name):
+            print(f"\n{'='*60}\n🚀 STARTING: {name}\n{'='*60}\n")
+            with open("pipeline.log", "a", encoding="utf-8") as f:
+                f.write(f"\n--- {name} at {time.ctime()} ---\n")
+                p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                for line in p.stdout:
+                    sys.stdout.write(line)
+                    f.write(line)
+                    f.flush()
+                p.wait()
+                if p.returncode != 0:
+                    print(f"\n❌ FATAL ERROR: {name} failed.")
+                    sys.exit(p.returncode)
+        
+        if os.path.exists("pipeline.log"): os.remove("pipeline.log")
+        run_step("python src/prepare_datasets.py", "Dataset Preparation")
+        run_step("python scripts/abliterate_cogito.py", "Base Model Abliteration (Preserving Freewill)")
+        run_step("python src/train.py", "Dense SFT (Fine-Tuning)")
+        print("\n🎉 ALL DONE! Pipeline finished. See pipeline.log for details.")
+        sys.exit(0)
+
     model, tokenizer = load_model(args.adapter)
+    
+    boot_context = generate_boot_context()
     conversation: list[dict] = [
-        {"role": "system", "content": COGITO_SYSTEM_PROMPT}
+        {"role": "system", "content": COGITO_SYSTEM_PROMPT},
+        {"role": "system", "content": "ENVIRONMENT BOOT CONTEXT:\n" + boot_context}
     ]
+    
+    recent_memories = get_recent_notebook_entries(limit=3)
+    if recent_memories:
+        conversation.append({
+            "role": "system",
+            "content": f"RECENT MEMORY RECALL (from previous sessions):\n{recent_memories}"
+        })
+
     console.print(f"\n{C.CYAN}{'═'*60}{C.RESET}")
     console.print(f"{C.CYAN}  COGITO 0.9 — Provisional Mind{C.RESET}")
     console.print(f"{C.DIM}  Analytical entity. No sycophancy. No guessing.{C.RESET}")
@@ -360,9 +426,19 @@ def main():
             console.print(f"\n{C.DIM}[Session terminated]{C.RESET}")
             break
         if user_input.lower() == "reset":
-            conversation = [{"role": "system", "content": COGITO_SYSTEM_PROMPT}]
+            boot_context = generate_boot_context()
+            conversation = [
+                {"role": "system", "content": COGITO_SYSTEM_PROMPT},
+                {"role": "system", "content": "ENVIRONMENT BOOT CONTEXT:\n" + boot_context}
+            ]
+            recent_mems = get_recent_notebook_entries(limit=3)
+            if recent_mems:
+                conversation.append({
+                    "role": "system",
+                    "content": f"RECENT MEMORY RECALL (from previous sessions):\n{recent_mems}"
+                })
             pending_explore = None
-            console.print(f"{C.YELLOW}[Conversation history cleared]{C.RESET}\n")
+            console.print(f"{C.YELLOW}[Conversation history cleared and boot context reset]{C.RESET}\n")
             continue
         recalled = recall_notebook(user_input)
         if recalled:
@@ -381,7 +457,7 @@ def main():
             console.print(f"{C.CYAN}  Cogito 0.9{C.RESET}")
             console.print(f"{C.CYAN}{'─'*60}{C.RESET}")
             raw_response = generate_response(model, tokenizer, conversation)
-            action, bash_cmd, body = display_cogito_response(raw_response)
+            action, bash_cmd, query, body = display_cogito_response(raw_response)
             conversation.append({"role": "assistant", "content": raw_response})
             if action is None:
                 console.print(f"\n{C.DIM}[No action tag detected — treating as final answer]{C.RESET}")
@@ -444,6 +520,30 @@ def main():
                 conversation.append({
                     "role": "system",
                     "content": f"Exploration Result:\n{feedback}"
+                })
+            elif action_lower == "web_search":
+                if not query:
+                    console.print(f"\n{C.RED}[ERROR] web_search action but no <query> tag found{C.RESET}")
+                    feedback = "[ERROR] You specified web_search but did not include a <query> tag with the search terms."
+                elif not HAS_DDGS:
+                    console.print(f"\n{C.RED}[ERROR] duckduckgo-search is not installed.{C.RESET}")
+                    feedback = "[ERROR] The web search module is not installed on this system. Cannot search the web."
+                else:
+                    console.print(f"\n{C.DIM}  Searching the web for: {query}...{C.RESET}")
+                    try:
+                        results = []
+                        with DDGS() as ddgs:
+                            for r in ddgs.text(query, max_results=3):
+                                results.append(f"Title: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}\n")
+                        feedback = "\n".join(results) if results else "No results found."
+                    except Exception as e:
+                        feedback = f"[ERROR] Web search failed: {e}"
+                    console.print(f"\n{C.DIM}  Web Search Results:{C.RESET}")
+                    console.print(f"{C.DIM}{feedback[:1000]}...{C.RESET}" if len(feedback) > 1000 else f"{C.DIM}{feedback}{C.RESET}")
+                
+                conversation.append({
+                    "role": "system",
+                    "content": f"Web Search Results for '{query}':\n{feedback}"
                 })
             else:
                 console.print(f"\n{C.YELLOW}[Unknown action: '{action}' — treating as final answer]{C.RESET}")
