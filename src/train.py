@@ -265,15 +265,7 @@ try:
             response_part="<|im_start|>assistant\n",
         )
         
-        # We only auto-resume if it's the very first execution and a checkpoint exists
-        last_checkpoint = None
-        if i == 0 and os.path.isdir(training_args.output_dir):
-            checkpoints = glob.glob(os.path.join(training_args.output_dir, "checkpoint-*"))
-            if checkpoints:
-                last_checkpoint = max(checkpoints, key=lambda x: int(x.split("-")[-1]))
-                print(f"\n[RESUME] Auto-resuming from checkpoint: {last_checkpoint}")
-                
-        train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
+        train_result = trainer.train()
         metrics = train_result.metrics
         print(f"\n  -> Completed shard {i+1}. Train loss: {metrics.get('train_loss', 'N/A'):.4f}\n")
 except Exception as e:
