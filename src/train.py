@@ -1,4 +1,5 @@
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import json
 import sys
 try:
@@ -184,8 +185,8 @@ class EvalCogitoCallback(TrainerCallback):
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "cogito_0.9_lora")
 training_args = TrainingArguments(
     output_dir=os.path.join(PROJECT_ROOT, "cogito_training_output"),
-    per_device_train_batch_size=2,
-    gradient_accumulation_steps=8,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=16,
     learning_rate=2e-5,                                    
     lr_scheduler_type="cosine",                      
     warmup_ratio=0.05,                            
