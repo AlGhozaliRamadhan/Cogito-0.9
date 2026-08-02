@@ -81,5 +81,37 @@ else:
 !torchrun --nproc_per_node=2 src/train.py --dataset ozaa77/Cogito-0.9-dataset --epochs 2
 ```
 
+### Training Only (Skip Dataset Generation)
+If you already have your dataset on Hugging Face (e.g., `ozaa77/Cogito-0.9-dataset`) and want to skip the local dataset generation via NVIDIA APIs, you can run this streamlined version instead. It will only pull the dataset and begin training.
+
+```python
+import os
+from kaggle_secrets import UserSecretsClient
+
+# 1. Load secrets from Kaggle Secrets
+try:
+    user_secrets = UserSecretsClient()
+    os.environ["HF_TOKEN"] = user_secrets.get_secret("HF_TOKEN")
+    print("HF_TOKEN loaded successfully!")
+except Exception as e:
+    print("WARNING: Could not load HF_TOKEN from Kaggle Secrets.")
+
+# 2. Clone the repository
+REPO_DIR = "/kaggle/working/Cogito-0.9"
+if os.path.isdir(REPO_DIR):
+    os.chdir(REPO_DIR)
+    !git pull
+else:
+    !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
+    %cd Cogito-0.9
+!pip install -r requirements.txt
+
+# 3. ABLITERATE the base model (removes generic censorship)
+!python scripts/abliterate_cogito.py
+
+# 4. TRAINING: Fine-tune using your Hugging Face dataset
+!torchrun --nproc_per_node=2 src/train.py --dataset ozaa77/Cogito-0.9-dataset --epochs 3
+```
+
 ### Automatic Checkpoints
 Because `train.py` uses `push_to_hub=True` and `hub_strategy="checkpoint"`, your model checkpoints will automatically be pushed to your Hugging Face repository (e.g., `ozaa77/Cogito-0.9`) at the end of every epoch. You don't have to worry about Kaggle timing out and losing your progress!
