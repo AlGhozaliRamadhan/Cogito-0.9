@@ -187,7 +187,11 @@ try:
         if os.path.isfile(current_dataset_path):
             dataset = load_dataset("json", data_files=current_dataset_path, split="train")
         else:
-            dataset = load_dataset(current_dataset_path, split="train")
+            try:
+                dataset = load_dataset(current_dataset_path, split="train")
+            except TypeError as e:
+                print(f"\n[WARNING] Failed to load dataset metadata ({e}). Bypassing dataset card and loading parquet directly...")
+                dataset = load_dataset("parquet", data_files=f"hf://datasets/{current_dataset_path}/**/*.parquet", split="train")
             
         dataset = dataset.map(format_example, remove_columns=dataset.column_names)
     
