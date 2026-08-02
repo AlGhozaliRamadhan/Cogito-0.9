@@ -60,21 +60,34 @@ def main():
     # 2. Load Cogito's Agentic (Harmless) Data
     print("Loading Cogito's master dataset to preserve freewill...")
     harmless_prompts = []
-    if os.path.exists(DATASET_PATH):
-        with open(DATASET_PATH, 'r', encoding='utf-8') as f:
-            for line in f:
-                data = json.loads(line)
-                messages = data.get("messages", [])
-                # Extract the prompt part to pass to the model
-                # We want the user prompt, just like the harmful dataset
-                user_msg = next((m["content"] for m in messages if m["role"] == "user"), None)
-                if user_msg:
-                    harmless_prompts.append([{"role": "user", "content": user_msg}])
-                if len(harmless_prompts) >= NUM_SAMPLES:
-                    break
-    else:
-        print(f"Dataset {DATASET_PATH} not found. Please run this script from the scripts/ directory.")
-        return
+    
+    # Try Hugging Face dataset first
+    try:
+        harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
+        for data in harmless_ds:
+            messages = data.get("messages", [])
+            user_msg = next((m["content"] for m in messages if m["role"] == "user"), None)
+            if user_msg:
+                harmless_prompts.append([{"role": "user", "content": user_msg}])
+            if len(harmless_prompts) >= NUM_SAMPLES:
+                break
+    except Exception as e:
+        print(f"Failed to load HF dataset, trying local file: {e}")
+        
+    if len(harmless_prompts) < NUM_SAMPLES:
+        if os.path.exists(DATASET_PATH):
+            with open(DATASET_PATH, 'r', encoding='utf-8') as f:
+                for line in f:
+                    data = json.loads(line)
+                    messages = data.get("messages", [])
+                    user_msg = next((m["content"] for m in messages if m["role"] == "user"), None)
+                    if user_msg:
+                        harmless_prompts.append([{"role": "user", "content": user_msg}])
+                    if len(harmless_prompts) >= NUM_SAMPLES:
+                        break
+        else:
+            print(f"Dataset {DATASET_PATH} not found. Please run this script from the scripts/ directory or ensure HF dataset is accessible.")
+            return
         
     print(f"Gathered {len(harmful_prompts)} harmful and {len(harmless_prompts)} harmless (Cogito) prompts.")
     

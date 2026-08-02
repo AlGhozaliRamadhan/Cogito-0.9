@@ -66,6 +66,7 @@ else:
     !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
     %cd Cogito-0.9
 !pip install -r requirements.txt
+!pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
 
 # 3. GENERATE the Hugging Face General Knowledge datasets (Creates 19 separate files in data/hf_shards/)
 !python src/prepare_datasets.py
@@ -105,6 +106,7 @@ else:
     !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
     %cd Cogito-0.9
 !pip install -r requirements.txt
+!pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
 
 # 3. ABLITERATE the base model (removes generic censorship)
 !python scripts/abliterate_cogito.py
