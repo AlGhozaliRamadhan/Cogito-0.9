@@ -28,6 +28,7 @@ cogito_0.9_merged_16bit/
 
 # Scratch and Mock Data
 scratch_test.py
+scratch/
 data/mock_hf_shards/
 
 # Secrets
