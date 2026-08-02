@@ -81,6 +81,19 @@ def format_example(example):
     Convert a single dataset example into the tokenized ChatML format.
     """
     messages = example.get("messages", [])
+    
+    import json
+    if isinstance(messages, str):
+        try:
+            messages = json.loads(messages)
+        except Exception:
+            pass
+    elif isinstance(messages, list) and len(messages) > 0 and isinstance(messages[0], str):
+        try:
+            messages = [json.loads(m) if isinstance(m, str) else m for m in messages]
+        except Exception:
+            pass
+
     formatted_text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,                                          
@@ -189,9 +202,21 @@ try:
         else:
             try:
                 dataset = load_dataset(current_dataset_path, split="train")
-            except TypeError as e:
-                print(f"\n[WARNING] Failed to load dataset metadata ({e}). Bypassing dataset card and loading parquet directly...")
-                dataset = load_dataset("parquet", data_files=f"hf://datasets/{current_dataset_path}/**/*.parquet", split="train")
+            except Exception as e:
+                print(f"\n[WARNING] Standard loading failed ({e}). Attempting robust pandas loading...")
+                import pandas as pd
+                from datasets import Dataset
+                from huggingface_hub import list_repo_files
+                
+                # Fetch all parquet files from the repo
+                files = [f for f in list_repo_files(current_dataset_path, repo_type="dataset") if f.endswith(".parquet")]
+                dfs = []
+                for f in files:
+                    file_url = f"hf://datasets/{current_dataset_path}/{f}"
+                    dfs.append(pd.read_parquet(file_url))
+                
+                df = pd.concat(dfs, ignore_index=True)
+                dataset = Dataset.from_pandas(df)
             
         dataset = dataset.map(format_example, remove_columns=dataset.column_names)
     
