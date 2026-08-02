@@ -120,6 +120,18 @@ from trl import SFTTrainer
 from transformers import TrainingArguments, TrainerCallback
 from unsloth.chat_templates import train_on_responses_only
 
+class SavePeftModelCallback(TrainerCallback):
+    def __init__(self, save_steps=50):
+        self.save_steps = save_steps
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step > 0 and state.global_step % self.save_steps == 0:
+            import os
+            output_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            print(f"\n[SAVE] Saving PEFT checkpoint to {output_dir}")
+            kwargs["model"].save_pretrained(output_dir)
+            kwargs["tokenizer"].save_pretrained(output_dir)
+
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
         model = kwargs.get("model")
@@ -199,7 +211,7 @@ training_args = TrainingArguments(
     logging_steps=5,
     logging_first_step=True,
     report_to="none",                                                   
-    save_strategy="epoch",
+    save_strategy="no",
     save_total_limit=2,                                                  
     seed=42,
     dataloader_pin_memory=True,
@@ -244,7 +256,7 @@ try:
             max_seq_length=MAX_SEQ_LENGTH,
             dataset_text_field="text",                                                
             packing=False,
-            callbacks=[EvalCogitoCallback()],
+            callbacks=[EvalCogitoCallback(), SavePeftModelCallback(save_steps=50)],
         )
         
         trainer = train_on_responses_only(
