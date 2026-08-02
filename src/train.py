@@ -100,6 +100,14 @@ def format_example(example):
         except Exception:
             pass
 
+    # Fix malformed keys in the dataset (e.g., '=' instead of 'content')
+    for m in messages:
+        if isinstance(m, dict):
+            if "=" in m and "content" not in m:
+                m["content"] = m.pop("=")
+            if "content" not in m:
+                m["content"] = ""
+
     formatted_text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,                                          
