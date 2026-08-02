@@ -129,8 +129,19 @@ class SavePeftModelCallback(TrainerCallback):
             import os
             output_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
             print(f"\n[SAVE] Saving PEFT checkpoint to {output_dir}")
-            kwargs["model"].save_pretrained(output_dir)
-            kwargs["tokenizer"].save_pretrained(output_dir)
+            model = kwargs["model"]
+            tokenizer = kwargs["tokenizer"]
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token:
+                print(f"[HF] Pushing step {state.global_step} checkpoint to Hugging Face revision 'step-{state.global_step}'...")
+                try:
+                    model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=f"step-{state.global_step}")
+                    tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=f"step-{state.global_step}")
+                except Exception as e:
+                    print(f"[HF ERROR] Failed to push step checkpoint: {e}")
 
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
