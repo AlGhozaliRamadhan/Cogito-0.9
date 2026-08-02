@@ -210,6 +210,19 @@ def validate_conversation_structure(messages: list[dict]) -> ValidationResult:
     if len(messages) > 10:
         return ValidationResult(False, f"Conversation length {len(messages)} exceeds maximum ceiling of 10 turns")
 
+    # Every turn must carry a non-empty content body. A message dict that omits
+    # ``content`` (e.g. an agentic <feedback/> marker serialized with only a role)
+    # is not trainable and must fail validation rather than slip into format_example.
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            return ValidationResult(False, f"Message {i} is not an object")
+        content_field = msg.get("content")
+        if not isinstance(content_field, str) or not content_field.strip():
+            return ValidationResult(
+                False,
+                f"Message {i} ({msg.get('role', 'unknown')}) is missing non-empty content"
+            )
+
     # Rule 1: Turn 0 is system prompt
     turn_0 = messages[0]
     if not isinstance(turn_0, dict) or turn_0.get("role") != "system":

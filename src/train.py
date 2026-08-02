@@ -179,7 +179,7 @@ def format_example(example):
     """Convert one already-audited record into the ChatML training format."""
     messages = [
         m for m in parse_messages(example)
-        if isinstance(m, dict) and isinstance(m.get("content", ""), str) and m["content"].strip()
+        if isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"].strip()
     ]
     if not messages:
         raise ValueError("record has no usable content in any message")
