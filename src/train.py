@@ -203,6 +203,7 @@ training_args = TrainingArguments(
     save_total_limit=2,                                                  
     seed=42,
     dataloader_pin_memory=True,
+    ddp_find_unused_parameters=False,
     push_to_hub=False, # We handle HF pushing manually in the callback per-epoch
 )
 
