@@ -31,6 +31,12 @@ parser.add_argument("--epochs", type=int, default=3, help="Number of training ep
 parser.add_argument("--model", type=str, default=None, help="Base model to load (defaults to Abliterated model or Qwen 14B)")
 parser.add_argument("--output-dir", type=str, default=None, help="Directory for the final LoRA adapter")
 parser.add_argument("--training-output-dir", type=str, default=None, help="Directory for checkpoints and trainer state")
+parser.add_argument(
+    "--resume-from-checkpoint",
+    type=str,
+    default=None,
+    help="Optional path to a checkpoint-N dir to resume from (defaults to the latest found in --training-output-dir)",
+)
 parser.add_argument("--no-push-to-hub", action="store_true", help="Keep an isolated comparison run local")
 parser.add_argument(
     "--allow-unbalanced-dataset",
@@ -186,30 +192,39 @@ from unsloth.chat_templates import train_on_responses_only
 CPT_REVISION = "main"  # Checkpoints always land on the Hub's main branch, never a new one.
 
 class SavePeftModelCallback(TrainerCallback):
-    def __init__(self, save_steps=50):
-        self.save_steps = save_steps
+    """Push each native training checkpoint to the Hub's main branch.
+
+    HF's save_strategy='steps' already writes the full checkpoint (adapter weights,
+    trainer_state.json with the step counter, optimizer/scheduler state) to
+    --training-output-dir/checkpoint-<step>. We only mirror that same checkpoint to
+    the Hub so a killed Kaggle session can resume from it. Checkpoints always land
+    on main (CPT_REVISION); a new branch is never created.
+    """
 
     def on_step_end(self, args, state, control, **kwargs):
         if not IS_MAIN_PROCESS or not PUSH_CHECKPOINTS:
             return control
-        if state.global_step > 0 and state.global_step % self.save_steps == 0:
+        if state.global_step > 0 and state.global_step % args.save_steps == 0:
             import os
-            output_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-            print(f"\n[SAVE] Saving PEFT checkpoint to {output_dir}")
-            model = kwargs["model"]
-            tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
-            # Local savings are useless on Kaggle — persist each checkpoint to main.
+            ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            if not os.path.isdir(ckpt_dir):
+                return control  # Native HF may not have flushed it yet this hook; skip.
             hf_token = os.environ.get("HF_TOKEN")
-            if hf_token:
-                try:
-                    print(f"[HF] Pushing checkpoint {state.global_step} to main...")
-                    model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=CPT_REVISION)
-                    tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=CPT_REVISION)
-                    print(f"[HF] Checkpoint {state.global_step} pushed to branch '{CPT_REVISION}'.")
-                except Exception as exc:
-                    print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+            if not hf_token:
+                return control
+            try:
+                print(f"\n[HF] Pushing checkpoint {state.global_step} to '{CPT_REVISION}'...")
+                from huggingface_hub import upload_folder
+                upload_folder(
+                    repo_id="ozaa77/Cogito-0.9",
+                    folder_path=ckpt_dir,
+                    revision=CPT_REVISION,
+                    commit_message=f"checkpoint-{state.global_step}",
+                    token=hf_token,
+                )
+                print(f"[HF] Checkpoint {state.global_step} pushed to '{CPT_REVISION}'.")
+            except Exception as exc:
+                print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
 
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
@@ -294,16 +309,94 @@ training_args = TrainingArguments(
     max_grad_norm=1.0,                                    
     logging_steps=5,
     logging_first_step=True,
-    report_to="none",                                                   
-    save_strategy="no",
-    save_total_limit=2,                                                  
+    report_to="none",
+    # Native HF checkpointing persists trainer_state.json + optimizer + scheduler,
+    # which is what makes true resume-from-checkpoint possible. Checkpoints land in
+    # --training-output-dir (training-output), distinct from the final adapter dir.
+    save_strategy="steps",
+    save_steps=50,
+    save_total_limit=10,
+    load_best_model_at_end=False,
     seed=42,
     dataloader_pin_memory=True,
     ddp_find_unused_parameters=False,
     push_to_hub=False,  # The completed adapter is pushed manually once, on main.
 )
 
+# Where to resume from, in priority order:
+#   1. --resume-from-checkpoint flag (explicit local or hub path)
+#   2. Latest local checkpoint in --training-output-dir
+#   3. Latest checkpoint pulled from the Hub (ozaa77/Cogito-0.9) main branch
+#
+# A Kaggle session wipes /kaggle/working on restart, so the local fs cannot be
+# trusted to survive. The Hub is the source of truth: checkpoints are pushed there
+# during training, and pulled back here when the local copy is gone.
+HUB_REPO_ID = "ozaa77/Cogito-0.9"
+
+
+def find_latest_local_checkpoint(root: str) -> str | None:
+    if not os.path.isdir(root):
+        return None
+    dirs = [
+        d for d in os.listdir(root)
+        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(root, d))
+    ]
+    if not dirs:
+        return None
+    steps = sorted(int(d.split("-")[-1]) for d in dirs)
+    return os.path.join(root, f"checkpoint-{steps[-1]}")
+
+
+def collect_checkpoint_step(revision: str = "main") -> str:
+    """Refresh a local snapshot dir from the Hub's checkpoint-N folders.
+
+    Returns the path to the latest checkpoint present on the Hub, synced to
+    /kaggle/working so the trainer can resume from the actual adapter weights +
+    optimizer + scheduler + step state that were pushed.
+    """
+    from huggingface_hub import snapshot_download
+
+    cache_dir = os.path.join(TRAINING_OUTPUT_DIR, "hub_snapshot")
+    print(f"\n[HF] Pulling latest checkpoint from {HUB_REPO_ID}@{revision} ...")
+    snapshot_download(
+        repo_id=HUB_REPO_ID,
+        revision=revision,
+        repo_type="model",
+        allow_patterns=["checkpoint-*/*", "checkpoint-*"],
+        cache_dir=cache_dir,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    # snapshot_download writes a hashed tree; find the checkpoint subdirs we need.
+    latest = None
+    for root, dirs, files in os.walk(cache_dir):
+        for d in dirs:
+            if d.startswith("checkpoint-"):
+                cand = os.path.join(root, d)
+                if latest is None:
+                    latest = cand
+                else:
+                    step_a = int(os.path.basename(cand).split("-")[-1])
+                    step_b = int(os.path.basename(latest).split("-")[-1])
+                    if step_a > step_b:
+                        latest = cand
+    if latest:
+        print(f"[HF] Resuming from Hub checkpoint: {latest}")
+    else:
+        print("[HF] No checkpoint-NNN found on the Hub; starting fresh.")
+    return latest
+
+
+# 1) explicit flag wins; then local; then pull from the Hub.
+resume_dir = args.resume_from_checkpoint
+if not resume_dir:
+    resume_dir = find_latest_local_checkpoint(TRAINING_OUTPUT_DIR)
+    if resume_dir:
+        print(f"\n[RESUME] Local checkpoint found: {resume_dir}")
+if not resume_dir:
+    resume_dir = collect_checkpoint_step(revision="main")
+
 try:
+    checkpoint_path = resume_dir
     for i, current_dataset_path in enumerate(datasets_to_train):
         print(f"\n{'='*60}")
         print(f"PHASE/SHARD {i+1} OF {len(datasets_to_train)}: {current_dataset_path}")
@@ -339,20 +432,25 @@ try:
             train_dataset=dataset,
             args=training_args,
             max_seq_length=MAX_SEQ_LENGTH,
-            dataset_text_field="text",                                                
+            dataset_text_field="text",
             packing=False,
-            callbacks=[EvalCogitoCallback(), SavePeftModelCallback(save_steps=50)],
+            callbacks=[EvalCogitoCallback(), SavePeftModelCallback()],
         )
-        
+
         trainer = train_on_responses_only(
             trainer,
             instruction_part="<|im_start|>user\n",
             response_part="<|im_start|>assistant\n",
         )
-        
-        train_result = trainer.train()
+
+        train_result = trainer.train(resume_from_checkpoint=checkpoint_path)
         metrics = train_result.metrics
         print(f"\n  -> Completed shard {i+1}. Train loss: {metrics.get('train_loss', 'N/A'):.4f}\n")
+
+        # Shard i finished. The next shard must NOT resume from shard i's checkpoint,
+        # or the trainer would think its epoch is already advanced. Reset it so shard
+        # i+1 (and any later resume) starts from a clean step counter.
+        checkpoint_path = None
 except Exception as e:
     print(f"\n[FATAL] Training crashed: {e}")
     raise
