@@ -130,7 +130,7 @@ class SavePeftModelCallback(TrainerCallback):
             output_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
             print(f"\n[SAVE] Saving PEFT checkpoint to {output_dir}")
             model = kwargs["model"]
-            tokenizer = kwargs["tokenizer"]
+            tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
             
@@ -146,7 +146,7 @@ class SavePeftModelCallback(TrainerCallback):
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
         model = kwargs.get("model")
-        tokenizer = kwargs.get("tokenizer")
+        tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
         if not model or not tokenizer:
             return
 
