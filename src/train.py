@@ -247,7 +247,7 @@ try:
         
         trainer = train_on_responses_only(
             trainer,
-            instruction_part=["<|im_start|>user\n", "<|im_start|>system\n"],
+            instruction_part="<|im_start|>user\n",
             response_part="<|im_start|>assistant\n",
         )
         
