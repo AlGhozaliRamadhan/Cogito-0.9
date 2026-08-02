@@ -39,6 +39,10 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+# Checkpoints are persisted to the Hub's main branch during training unless the
+# user explicitly asked for a fully-local, isolated run.
+PUSH_CHECKPOINTS = bool(os.environ.get("HF_TOKEN")) and not args.no_push_to_hub
+
 GENERATORS_DIR = os.path.join(PROJECT_ROOT, "scripts", "generators")
 if GENERATORS_DIR not in sys.path:
     sys.path.insert(0, GENERATORS_DIR)
@@ -179,12 +183,14 @@ from trl import SFTTrainer
 from transformers import TrainingArguments, TrainerCallback
 from unsloth.chat_templates import train_on_responses_only
 
+CPT_REVISION = "main"  # Checkpoints always land on the Hub's main branch, never a new one.
+
 class SavePeftModelCallback(TrainerCallback):
     def __init__(self, save_steps=50):
         self.save_steps = save_steps
 
     def on_step_end(self, args, state, control, **kwargs):
-        if not IS_MAIN_PROCESS:
+        if not IS_MAIN_PROCESS or not PUSH_CHECKPOINTS:
             return control
         if state.global_step > 0 and state.global_step % self.save_steps == 0:
             import os
@@ -194,6 +200,16 @@ class SavePeftModelCallback(TrainerCallback):
             tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
+            # Local savings are useless on Kaggle — persist each checkpoint to main.
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token:
+                try:
+                    print(f"[HF] Pushing checkpoint {state.global_step} to main...")
+                    model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=CPT_REVISION)
+                    tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=CPT_REVISION)
+                    print(f"[HF] Checkpoint {state.global_step} pushed to branch '{CPT_REVISION}'.")
+                except Exception as exc:
+                    print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
 
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):

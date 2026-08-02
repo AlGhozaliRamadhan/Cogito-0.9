@@ -105,9 +105,6 @@ else:
 !pip install -r requirements.txt
 !pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
 
-# 3. Rebuild the local dense dataset, with no new API generation.
-!python data/build_dense_dataset.py
-
 # 4. Isolation run: use plain Qwen and keep its adapter/checkpoints local.
 !torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
 ```
