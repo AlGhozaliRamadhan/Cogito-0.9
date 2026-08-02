@@ -177,9 +177,15 @@ def audit_dataset(dataset, dataset_name):
 
 def format_example(example):
     """Convert one already-audited record into the ChatML training format."""
+    messages = [
+        m for m in parse_messages(example)
+        if isinstance(m, dict) and isinstance(m.get("content", ""), str) and m["content"].strip()
+    ]
+    if not messages:
+        raise ValueError("record has no usable content in any message")
     return {
         "text": tokenizer.apply_chat_template(
-            parse_messages(example),
+            messages,
             tokenize=False,
             add_generation_prompt=False,
         )
