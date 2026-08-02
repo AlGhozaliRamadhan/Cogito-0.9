@@ -31,16 +31,15 @@ python run.py --adapter ./cogito_0.9_lora
 
 ---
 
-## Kaggle Quickstart (Training & Dataset Generation)
+## Kaggle Quickstart (Training from Existing Shards)
 
-If you are running this on Kaggle (recommended: 2x T4 GPUs), you don't need to run things step-by-step. Just copy the code block below into a single Kaggle Notebook cell, add your secrets, and let it build the dataset and train the model end-to-end.
+If you are running this on Kaggle (recommended: 2x T4 GPUs), you don't need to run things step-by-step. The workflow below assumes the existing Cogito raw shards have been mounted or copied to `data/raw`; it does not generate new examples.
 
-### Required Kaggle Secrets:
-- `HF_TOKEN` — Your Hugging Face token (for pushing datasets and model checkpoints).
-- `NVIDIA_API_KEY` — Your [NVIDIA NIM API key](https://build.nvidia.com/) (required to generate the training dataset).
+### Optional Kaggle Secret:
+- `HF_TOKEN` — Your Hugging Face token, only if you want to upload checkpoints.
 
 ### End-to-End Execution Cell
-This script automatically clones the repository, generates all scenario datasets via the NVIDIA NIM API, merges them, pushes the combined dataset to Hugging Face, runs multi-GPU training, and uploads checkpoints automatically.
+This script reuses the local Cogito scenario shards, builds the reweighted dense dataset, runs fine-tuning, and uploads checkpoints automatically.
 
 ```python
 import os
@@ -68,22 +67,20 @@ else:
 !pip install -r requirements.txt
 !pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
 
-# 3. GENERATE the Hugging Face General Knowledge datasets (Creates 19 separate files in data/hf_shards/)
-!python src/prepare_datasets.py
+# 3. Build the dense dataset from the existing Cogito shards.
+#    Identity core is repeated 3x and philosophical probing 4x.
+!python data/build_dense_dataset.py
 
-# 4. ABLITERATE the base model (removes generic censorship while preserving Cogito's freewill)
+# 4. Optional: abliterate the base model.
 !python scripts/abliterate_cogito.py
 
-# 5. PHASE 1 TRAINING (CURRICULUM LEARNING): Loops through each dataset one by one internally!
-!torchrun --nproc_per_node=2 src/train.py --dataset data/hf_shards --epochs 1
-
-# 6. PHASE 2 TRAINING: Cogito Alignment & Agentic Formatting (2 Epochs)
-#    This resumes from the Phase 1 checkpoints and perfectly aligns the personality.
-!torchrun --nproc_per_node=2 src/train.py --dataset ozaa77/Cogito-0.9-dataset --epochs 2
+# 5. Train only on the persona-aligned dense dataset. The old Phase 1 generic
+#    HF corpus has no Cogito system prompt, so it is intentionally skipped.
+!torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3
 ```
 
-### Training Only (Skip Dataset Generation)
-If you already have your dataset on Hugging Face (e.g., `ozaa77/Cogito-0.9-dataset`) and want to skip the local dataset generation via NVIDIA APIs, you can run this streamlined version instead. It will only pull the dataset and begin training.
+### Plain-Qwen Comparison Run
+Use this when the existing raw Cogito shards are already available and you want to test whether abliteration is weakening the persona. It trains locally and does not overwrite or upload the current adapter.
 
 ```python
 import os
@@ -108,12 +105,12 @@ else:
 !pip install -r requirements.txt
 !pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
 
-# 3. ABLITERATE the base model (removes generic censorship)
-!python scripts/abliterate_cogito.py
+# 3. Rebuild the local dense dataset, with no new API generation.
+!python data/build_dense_dataset.py
 
-# 4. TRAINING: Fine-tune using your Hugging Face dataset
-!torchrun --nproc_per_node=2 src/train.py --dataset ozaa77/Cogito-0.9-dataset --epochs 3
+# 4. Isolation run: use plain Qwen and keep its adapter/checkpoints local.
+!torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
 ```
 
 ### Automatic Checkpoints
-Because `train.py` uses `push_to_hub=True` and `hub_strategy="checkpoint"`, your model checkpoints will automatically be pushed to your Hugging Face repository (e.g., `ozaa77/Cogito-0.9`) at the end of every epoch. You don't have to worry about Kaggle timing out and losing your progress!
+Checkpoints are saved locally every 50 steps. After training completes, the final LoRA adapter is uploaded once to the Hugging Face repository's `main` branch; no step or epoch revisions are created.

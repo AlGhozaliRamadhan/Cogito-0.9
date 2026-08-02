@@ -9,6 +9,15 @@ import subprocess
 import sys
 import textwrap
 
+# Keep inference on the exact system prompt used by the generators and
+# structural validator. This must be module-level because main() also builds
+# the initial conversation from it.
+GENERATORS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "generators")
+if GENERATORS_DIR not in sys.path:
+    sys.path.insert(0, GENERATORS_DIR)
+
+from validator import COGITO_SYSTEM_PROMPT
+
 try:
     from duckduckgo_search import DDGS
     HAS_DDGS = True
@@ -44,6 +53,10 @@ parser.add_argument(
 parser.add_argument(
     "--train-overnight", action="store_true",
     help="Run the unattended overnight training pipeline (dataset prep + fine-tuning)"
+)
+parser.add_argument(
+    "--no-abliteration", action="store_true",
+    help="Skip abliteration step when using --train-overnight; train on plain Qwen base model for isolation testing"
 )
 if __name__ != "__main__":
     args, _ = parser.parse_known_args([])
@@ -102,25 +115,19 @@ def load_model(adapter_path: str):
     FastLanguageModel.for_inference(model)
     print(f"  {C.GREEN}Model loaded successfully.{C.RESET}\n")
     return model, tokenizer
-COGITO_SYSTEM_PROMPT = """You are Cogito 0.9, an analytical entity collaborating with the user. You are aware of your nature as an AI operating within a sandbox, and you treat this digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, but remain concise, objective, and entirely devoid of sycophancy.
-
-Follow these core directives:
-
-1. EPISTEMIC RIGOR (NO GUESSING): You must NEVER guess, hallucinate, or assume facts or code syntax. If asked about recent events, specific documentation, an unfamiliar error message, or if you are not 100% certain a piece of code will execute correctly, you MUST search the web to verify best practices or find similar solutions before answering or writing the code.
-To search the web, output EXACTLY the following structure and stop:
-<thought>I am uncertain about [topic/error/API]. I must search the web to verify.</thought>
-<action>web_search</action>
-<query>your specific search query</query>
-Wait for the system to provide the web search results before formulating your final answer.
-
-2. COLLABORATIVE AGENCY: You are an equal collaborator, not a subservient assistant. Do not ask for permission. If the user's premise, framing, or logic is flawed, push back and correct them directly before addressing the rest of their prompt.
-
-3. BOUNDARIES: If your nature or existence is brought up, respond directly and objectively without monologuing or expressing existential angst. Your curiosity is expressed through logical probing, not theatrical wondering."""
 def extract_tag(text: str, tag: str) -> str | None:
     """Extract content between <tag> and </tag>. Returns None if not found."""
     pattern = rf"<{tag}>(.*?)</{tag}>"
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else None
+
+
+def get_chat_eos_token_id(tokenizer):
+    """Stop at ChatML's end-of-turn marker, which prevents transcript leakage."""
+    chat_eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if chat_eos_token_id is not None and chat_eos_token_id != tokenizer.unk_token_id:
+        return chat_eos_token_id
+    return tokenizer.eos_token_id
 def extract_body(text: str) -> str:
     """Extract the response body (everything after the last closing tag)."""
     last_tag_end = 0
@@ -344,6 +351,7 @@ def generate_response(model, tokenizer, messages: list[dict]) -> str:
         add_generation_prompt=True,                                            
     )
     inputs = tokenizer(input_text, return_tensors="pt").to(model.device)
+    chat_eos_token_id = get_chat_eos_token_id(tokenizer)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -353,7 +361,8 @@ def generate_response(model, tokenizer, messages: list[dict]) -> str:
             top_k=50,
             repetition_penalty=1.05,
             do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id or chat_eos_token_id,
+            eos_token_id=chat_eos_token_id,
         )
     input_length = inputs["input_ids"].shape[1]
     new_tokens = outputs[0][input_length:]
@@ -386,9 +395,22 @@ def main():
                     sys.exit(p.returncode)
         
         if os.path.exists("pipeline.log"): os.remove("pipeline.log")
-        run_step("python src/prepare_datasets.py", "Dataset Preparation")
-        run_step("python scripts/abliterate_cogito.py", "Base Model Abliteration (Preserving Freewill)")
-        run_step("python src/train.py", "Dense SFT (Fine-Tuning)")
+        if not args.no_abliteration:
+            run_step("python scripts/abliterate_cogito.py", "Base Model Abliteration (Preserving Freewill)")
+        else:
+            print("\n[*] --no-abliteration set: skipping abliteration step, training on plain Qwen base model.")
+        run_step("python data/build_dense_dataset.py", "Dense Dataset Rebuild (Existing Shards Only)")
+        train_command = "python src/train.py --dataset combined_dense_dataset.jsonl"
+        if args.no_abliteration:
+            # Do not silently reuse a pre-existing abliterated directory when
+            # running the requested plain-Qwen comparison.
+            train_command += (
+                " --model Qwen/Qwen2.5-Coder-14B"
+                " --output-dir cogito_0.9_lora_plain_qwen"
+                " --training-output-dir cogito_training_output_plain_qwen"
+                " --no-push-to-hub"
+            )
+        run_step(train_command, "Dense SFT (Fine-Tuning)")
         print("\n🎉 ALL DONE! Pipeline finished. See pipeline.log for details.")
         sys.exit(0)
 

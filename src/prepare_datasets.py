@@ -85,7 +85,7 @@ def append_hf_datasets():
                 
             with open(output_file, "w", encoding="utf-8") as f:
                 for i, row in enumerate(ds):
-                    if i >= 500: break
+                    if i >= 100: break
                     
                     messages = []
                     

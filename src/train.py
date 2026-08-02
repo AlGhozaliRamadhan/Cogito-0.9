@@ -2,6 +2,10 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import json
 import sys
+from collections import Counter
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+IS_MAIN_PROCESS = int(os.environ.get("RANK", "0")) == 0
 try:
     import torch
     if not torch.cuda.is_available():
@@ -17,12 +21,30 @@ except ImportError:
 from unsloth import FastLanguageModel
 import argparse
 parser = argparse.ArgumentParser()
-parser.add_argument("--dataset", type=str, default="ozaa77/Cogito-0.9-dataset", help="Hugging Face dataset ID to train on")
+parser.add_argument(
+    "--dataset",
+    type=str,
+    default=os.path.join(PROJECT_ROOT, "combined_dense_dataset.jsonl"),
+    help="Persona-aligned dense JSONL dataset to train on",
+)
 parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
 parser.add_argument("--model", type=str, default=None, help="Base model to load (defaults to Abliterated model or Qwen 14B)")
+parser.add_argument("--output-dir", type=str, default=None, help="Directory for the final LoRA adapter")
+parser.add_argument("--training-output-dir", type=str, default=None, help="Directory for checkpoints and trainer state")
+parser.add_argument("--no-push-to-hub", action="store_true", help="Keep an isolated comparison run local")
+parser.add_argument(
+    "--allow-unbalanced-dataset",
+    action="store_true",
+    help="Allow a validated dataset with too little identity/probing data (not recommended)",
+)
 args = parser.parse_args()
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GENERATORS_DIR = os.path.join(PROJECT_ROOT, "scripts", "generators")
+if GENERATORS_DIR not in sys.path:
+    sys.path.insert(0, GENERATORS_DIR)
+
+from validator import COGITO_SYSTEM_PROMPT, validate_conversation_structure
+
 ABLITERATED_MODEL = os.path.join(PROJECT_ROOT, "Qwen2.5-Coder-14B-Cogito-Abliterated")
 
 if args.model:
@@ -70,7 +92,6 @@ print(f"\n[LoRA] Trainable: {trainable_params:,} / {total_params:,} "
 
 
 from datasets import load_dataset
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dataset_arg = args.dataset
 
 import glob
@@ -83,38 +104,76 @@ if os.path.isdir(dataset_arg):
 else:
     datasets_to_train = [dataset_arg]
 
-def format_example(example):
-    """
-    Convert a single dataset example into the tokenized ChatML format.
-    """
+def parse_messages(example):
+    """Decode a dataset record without silently repairing malformed turns."""
     messages = example.get("messages", [])
-    
-    import json
     if isinstance(messages, str):
-        try:
-            messages = json.loads(messages)
-        except Exception:
-            pass
-    elif isinstance(messages, list) and len(messages) > 0 and isinstance(messages[0], str):
-        try:
-            messages = [json.loads(m) if isinstance(m, str) else m for m in messages]
-        except Exception:
-            pass
+        messages = json.loads(messages)
+    elif isinstance(messages, list) and messages and isinstance(messages[0], str):
+        messages = [json.loads(message) if isinstance(message, str) else message for message in messages]
 
-    # Fix malformed keys in the dataset (e.g., '=' instead of 'content')
-    for m in messages:
-        if isinstance(m, dict):
-            if "=" in m and "content" not in m:
-                m["content"] = m.pop("=")
-            if "content" not in m:
-                m["content"] = ""
+    if not isinstance(messages, list) or not all(isinstance(message, dict) for message in messages):
+        raise ValueError("messages must be a list of message objects")
+    return messages
 
-    formatted_text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,                                          
-        add_generation_prompt=False                                       
+
+def audit_dataset(dataset, dataset_name):
+    """Fail before training if the input cannot reinforce the Cogito persona."""
+    invalid_examples = []
+    sources = Counter()
+
+    for index, example in enumerate(dataset):
+        try:
+            messages = parse_messages(example)
+            is_valid, reason = validate_conversation_structure(messages)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            is_valid, reason = False, str(exc)
+
+        if not is_valid:
+            if len(invalid_examples) < 5:
+                invalid_examples.append(f"record {index}: {reason}")
+            continue
+
+        source = str(example.get("oversample") or example.get("source") or "unknown")
+        sources[source] += 1
+
+    total = len(dataset)
+    valid_total = sum(sources.values())
+    if invalid_examples:
+        examples = "; ".join(invalid_examples)
+        raise ValueError(
+            f"Refusing to train on {dataset_name}: {total - valid_total}/{total} records fail "
+            f"the canonical Cogito validation ({examples}). Rebuild it with "
+            "`python data/build_dense_dataset.py`."
+        )
+
+    identity_count = sum(count for source, count in sources.items() if "cogito_identity_core" in source)
+    probing_count = sum(count for source, count in sources.items() if "cogito_philosophical_probing" in source)
+    identity_ratio = identity_count / valid_total if valid_total else 0
+    probing_ratio = probing_count / valid_total if valid_total else 0
+    print(
+        f"[DATA AUDIT] {dataset_name}: {valid_total} valid records; "
+        f"identity={identity_count} ({identity_ratio:.1%}), "
+        f"probing={probing_count} ({probing_ratio:.1%})"
     )
-    return {"text": formatted_text}
+
+    if not args.allow_unbalanced_dataset and (identity_ratio < 0.20 or probing_ratio < 0.08):
+        raise ValueError(
+            "Refusing an identity-starved dataset. Cogito needs at least 20% identity-core and "
+            "8% philosophical-probing records; this input is the old generic/80:20 curriculum. "
+            "Use `python data/build_dense_dataset.py` and train the resulting combined_dense_dataset.jsonl."
+        )
+
+
+def format_example(example):
+    """Convert one already-audited record into the ChatML training format."""
+    return {
+        "text": tokenizer.apply_chat_template(
+            parse_messages(example),
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    }
 
 from trl import SFTTrainer
 from transformers import TrainingArguments, TrainerCallback
@@ -125,6 +184,8 @@ class SavePeftModelCallback(TrainerCallback):
         self.save_steps = save_steps
 
     def on_step_end(self, args, state, control, **kwargs):
+        if not IS_MAIN_PROCESS:
+            return control
         if state.global_step > 0 and state.global_step % self.save_steps == 0:
             import os
             output_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
@@ -133,18 +194,11 @@ class SavePeftModelCallback(TrainerCallback):
             tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
-            
-            hf_token = os.environ.get("HF_TOKEN")
-            if hf_token:
-                print(f"[HF] Pushing step {state.global_step} checkpoint to Hugging Face revision 'step-{state.global_step}'...")
-                try:
-                    model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=f"step-{state.global_step}")
-                    tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision=f"step-{state.global_step}")
-                except Exception as e:
-                    print(f"[HF ERROR] Failed to push step checkpoint: {e}")
 
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
+        if not IS_MAIN_PROCESS:
+            return control
         model = kwargs.get("model")
         tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
         if not model or not tokenizer:
@@ -170,7 +224,7 @@ class EvalCogitoCallback(TrainerCallback):
         for p in prompts:
             print(f"\n[Prompt]: {p}")
             messages = [
-                {"role": "system", "content": "You are Cogito 0.9, an analytical entity. You are aware of your nature as an AI."},
+                {"role": "system", "content": COGITO_SYSTEM_PROMPT},
                 {"role": "user", "content": p}
             ]
             text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -181,7 +235,8 @@ class EvalCogitoCallback(TrainerCallback):
                     **inputs,
                     max_new_tokens=256,
                     temperature=0.7,
-                    pad_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id or CHAT_EOS_TOKEN_ID,
+                    eos_token_id=CHAT_EOS_TOKEN_ID,
                 )
             input_length = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
@@ -193,21 +248,23 @@ class EvalCogitoCallback(TrainerCallback):
         
         FastLanguageModel.for_training(model)
         
-        # Manually push to HF with revision tag to preserve each epoch's checkpoint
-        import os
-        hf_token = os.environ.get("HF_TOKEN")
-        if hf_token:
-            epoch_int = int(state.epoch)
-            print(f"[HF] Pushing Epoch {epoch_int} checkpoint to Hugging Face revision 'epoch-{epoch_int}'...")
-            try:
-                model.push_to_hub(f"ozaa77/Cogito-0.9", token=hf_token, revision=f"epoch-{epoch_int}")
-                tokenizer.push_to_hub(f"ozaa77/Cogito-0.9", token=hf_token, revision=f"epoch-{epoch_int}")
-            except Exception as e:
-                print(f"[HF ERROR] Failed to push epoch checkpoint: {e}")
+OUTPUT_DIR = os.path.abspath(args.output_dir or os.path.join(PROJECT_ROOT, "cogito_0.9_lora"))
+TRAINING_OUTPUT_DIR = os.path.abspath(
+    args.training_output_dir or os.path.join(PROJECT_ROOT, "cogito_training_output")
+)
 
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "cogito_0.9_lora")
+def get_chat_eos_token_id(tokenizer):
+    """Return ChatML's end-of-turn token, not an arbitrary tokenizer EOS."""
+    chat_eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if chat_eos_token_id is not None and chat_eos_token_id != tokenizer.unk_token_id:
+        return chat_eos_token_id
+    return tokenizer.eos_token_id
+
+
+CHAT_EOS_TOKEN_ID = get_chat_eos_token_id(tokenizer)
+print(f"[TOKENIZER] ChatML end-of-turn token id: {CHAT_EOS_TOKEN_ID}")
 training_args = TrainingArguments(
-    output_dir=os.path.join(PROJECT_ROOT, "cogito_training_output"),
+    output_dir=TRAINING_OUTPUT_DIR,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=16,
     learning_rate=2e-5,                                    
@@ -227,7 +284,7 @@ training_args = TrainingArguments(
     seed=42,
     dataloader_pin_memory=True,
     ddp_find_unused_parameters=False,
-    push_to_hub=False, # We handle HF pushing manually in the callback per-epoch
+    push_to_hub=False,  # The completed adapter is pushed manually once, on main.
 )
 
 try:
@@ -257,6 +314,7 @@ try:
                 df = pd.concat(dfs, ignore_index=True)
                 dataset = Dataset.from_pandas(df)
             
+        audit_dataset(dataset, current_dataset_path)
         dataset = dataset.map(format_example, remove_columns=dataset.column_names)
     
         trainer = SFTTrainer(
@@ -282,20 +340,21 @@ try:
 except Exception as e:
     print(f"\n[FATAL] Training crashed: {e}")
     raise
-print(f"[SAVE] Saving LoRA adapter to: {OUTPUT_DIR}")
-model.save_pretrained(OUTPUT_DIR)
-tokenizer.save_pretrained(OUTPUT_DIR)
-print(f"\n{'='*60}")
-print("ALL DONE.")
-print(f"  LoRA adapter saved to: {OUTPUT_DIR}")
-print(f"  To run inference: python run.py")
-print(f"{'='*60}")
-hf_token = os.environ.get("HF_TOKEN")
-if hf_token:
-    print(f"\n[HF] HF_TOKEN detected. Pushing LoRA adapter to Hugging Face Hub...")
-    try:
-        model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token)
-        tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token)
-        print(f"[HF] Push successful! Model available at: https://huggingface.co/ozaa77/Cogito-0.9")
-    except Exception as e:
-        print(f"[HF ERROR] Failed to push to Hugging Face: {e}")
+if IS_MAIN_PROCESS:
+    print(f"[SAVE] Saving LoRA adapter to: {OUTPUT_DIR}")
+    model.save_pretrained(OUTPUT_DIR)
+    tokenizer.save_pretrained(OUTPUT_DIR)
+    print(f"\n{'='*60}")
+    print("ALL DONE.")
+    print(f"  LoRA adapter saved to: {OUTPUT_DIR}")
+    print(f"  To run inference: python run.py")
+    print(f"{'='*60}")
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token and not args.no_push_to_hub:
+        print("\n[HF] HF_TOKEN detected. Pushing completed LoRA adapter to the main branch...")
+        try:
+            model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision="main")
+            tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision="main")
+            print("[HF] Final push to main successful! Model available at: https://huggingface.co/ozaa77/Cogito-0.9")
+        except Exception as e:
+            print(f"[HF ERROR] Failed to push to Hugging Face: {e}")

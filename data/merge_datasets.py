@@ -12,6 +12,7 @@ if generators_dir not in sys.path:
     sys.path.append(generators_dir)
 
 from validator import (
+    canonicalize_system_prompt,
     validate_conversation_structure,
 )
 
@@ -56,6 +57,7 @@ def load_shards(shard_list):
                 except json.JSONDecodeError:
                     rejected += 1
                     continue
+                record["messages"] = canonicalize_system_prompt(record.get("messages"))
                 if validate_record(record):
                     record["source"] = shard_name
                     records.append(record)

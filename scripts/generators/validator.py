@@ -53,6 +53,27 @@ LOOP_ACTIONS = {
 }
 
 
+def canonicalize_system_prompt(messages: list[dict]) -> list[dict]:
+    """Return a copy whose Cogito system turn uses the canonical prompt.
+
+    Older shards contain harmless wording variants of the Cogito prompt. Keeping
+    them verbatim teaches the model several incompatible identities, so the
+    dataset builder rewrites only that first system turn before validation.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    normalized = [dict(message) if isinstance(message, dict) else message for message in messages]
+    if not normalized or not isinstance(normalized[0], dict):
+        return normalized
+
+    first_message = normalized[0]
+    content = first_message.get("content", "")
+    if first_message.get("role") == "system" and "You are Cogito 0.9" in content:
+        first_message["content"] = COGITO_SYSTEM_PROMPT
+    return normalized
+
+
 class ValidationResult(tuple):
     """
     Tuple subclass (is_valid: bool, reason: str | None)
@@ -194,7 +215,7 @@ def validate_conversation_structure(messages: list[dict]) -> ValidationResult:
     if not isinstance(turn_0, dict) or turn_0.get("role") != "system":
         return ValidationResult(False, "Turn 0 must be a system message")
     turn_0_content = turn_0.get("content", "").strip()
-    if "You are Cogito 0.9" not in turn_0_content:
+    if turn_0_content != COGITO_SYSTEM_PROMPT.strip():
         return ValidationResult(False, "Turn 0 system prompt does not match COGITO_SYSTEM_PROMPT")
 
     # Rule 6 (A): Conversation concludes on an assistant turn
