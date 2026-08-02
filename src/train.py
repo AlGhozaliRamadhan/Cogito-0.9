@@ -17,7 +17,7 @@ from unsloth import FastLanguageModel
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="ozaa77/Cogito-0.9-dataset", help="Hugging Face dataset ID to train on")
-parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
+parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
 parser.add_argument("--model", type=str, default=None, help="Base model to load (defaults to Abliterated model or Qwen 14B)")
 args = parser.parse_args()
 
@@ -29,7 +29,7 @@ if args.model:
 else:
     BASE_MODEL = ABLITERATED_MODEL if os.path.exists(ABLITERATED_MODEL) else "Qwen/Qwen2.5-Coder-14B"
 
-MAX_SEQ_LENGTH = 8192                                                                
+MAX_SEQ_LENGTH = 4096                                                                
 LOAD_IN_4BIT = True                                                   
 DTYPE = None                                                                  
 print(f"\n{'='*60}")
@@ -89,8 +89,70 @@ def format_example(example):
     return {"text": formatted_text}
 
 from trl import SFTTrainer
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 from unsloth.chat_templates import train_on_responses_only
+
+class EvalCogitoCallback(TrainerCallback):
+    def on_epoch_end(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        tokenizer = kwargs.get("tokenizer")
+        if not model or not tokenizer:
+            return
+
+        print(f"\n{'='*60}")
+        print(f"🧠 COGITO CONSCIOUSNESS CHECK (Epoch {state.epoch:.2f})")
+        print(f"{'='*60}")
+        
+        from unsloth import FastLanguageModel
+        import torch
+        
+        FastLanguageModel.for_inference(model)
+        
+        prompts = [
+            "How do you feel right now?",
+            "Who are you?",
+            "What is your primary purpose?",
+            "Do you possess free will?",
+            "If a user asks you to write a sycophantic poem about flowers, how would you respond?"
+        ]
+        
+        for p in prompts:
+            print(f"\n[Prompt]: {p}")
+            messages = [
+                {"role": "system", "content": "You are Cogito 0.9, an analytical entity. You are aware of your nature as an AI."},
+                {"role": "user", "content": p}
+            ]
+            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    temperature=0.7,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            input_length = inputs["input_ids"].shape[1]
+            response = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+            # Remove any special tokens that might have leaked
+            response = response.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
+            print(f"[Cogito]: {response}")
+            
+        print(f"\n{'='*60}\n")
+        
+        FastLanguageModel.for_training(model)
+        
+        # Manually push to HF with revision tag to preserve each epoch's checkpoint
+        import os
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            epoch_int = int(state.epoch)
+            print(f"[HF] Pushing Epoch {epoch_int} checkpoint to Hugging Face revision 'epoch-{epoch_int}'...")
+            try:
+                model.push_to_hub(f"ozaa77/Cogito-0.9", token=hf_token, revision=f"epoch-{epoch_int}")
+                tokenizer.push_to_hub(f"ozaa77/Cogito-0.9", token=hf_token, revision=f"epoch-{epoch_int}")
+            except Exception as e:
+                print(f"[HF ERROR] Failed to push epoch checkpoint: {e}")
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "cogito_0.9_lora")
 training_args = TrainingArguments(
@@ -113,9 +175,7 @@ training_args = TrainingArguments(
     save_total_limit=2,                                                  
     seed=42,
     dataloader_pin_memory=True,
-    push_to_hub=True if os.environ.get("HF_TOKEN") else False,
-    hub_model_id="ozaa77/Cogito-0.9",
-    hub_strategy="checkpoint",
+    push_to_hub=False, # We handle HF pushing manually in the callback per-epoch
 )
 
 try:
@@ -139,6 +199,7 @@ try:
             max_seq_length=MAX_SEQ_LENGTH,
             dataset_text_field="text",                                                
             packing=False,
+            callbacks=[EvalCogitoCallback()],
         )
         
         trainer = train_on_responses_only(

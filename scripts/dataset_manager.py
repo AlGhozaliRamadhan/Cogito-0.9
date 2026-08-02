@@ -11,8 +11,7 @@ GENERATOR_FILES = {
     "personality_quirks.py",
     "retrieval_filter.py",
     "heated_conversations.py",
-    "lure_test.py",
-    "identity_bond.py",
+    "philosophical_probing.py",
 }
 
 def get_generators():

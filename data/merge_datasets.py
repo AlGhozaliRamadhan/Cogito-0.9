@@ -29,8 +29,7 @@ PERSONALITY_SHARDS = [
     "cogito_human_conversations.jsonl",
     "cogito_personality_quirks.jsonl",
     "cogito_heated_conversations.jsonl",
-    "cogito_lure_test.jsonl",
-    "cogito_identity_bond.jsonl",
+    "cogito_philosophical_probing.jsonl",
 ]
 
 def validate_record(record: dict) -> bool:
