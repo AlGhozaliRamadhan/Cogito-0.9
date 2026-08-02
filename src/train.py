@@ -201,30 +201,51 @@ class SavePeftModelCallback(TrainerCallback):
     on main (CPT_REVISION); a new branch is never created.
     """
 
-    def on_step_end(self, args, state, control, **kwargs):
+    def on_save(self, args, state, control, **kwargs):
+        # Fires after ANY save: step multiples of 50 AND epoch-end saves (the two
+        # things that set control.should_save). Mirrors the just-written checkpoint
+        # to the Hub so a stop at a non-50 step still persists. kwarg 'output_dir' is
+        # the dir HF actually wrote this checkpoint to.
         if not IS_MAIN_PROCESS or not PUSH_CHECKPOINTS:
             return control
-        if state.global_step > 0 and state.global_step % args.save_steps == 0:
-            import os
-            ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-            if not os.path.isdir(ckpt_dir):
-                return control  # Native HF may not have flushed it yet this hook; skip.
-            hf_token = os.environ.get("HF_TOKEN")
-            if not hf_token:
-                return control
-            try:
-                print(f"\n[HF] Pushing checkpoint {state.global_step} to '{CPT_REVISION}'...")
-                from huggingface_hub import upload_folder
-                upload_folder(
-                    repo_id="ozaa77/Cogito-0.9",
-                    folder_path=ckpt_dir,
-                    revision=CPT_REVISION,
-                    commit_message=f"checkpoint-{state.global_step}",
-                    token=hf_token,
-                )
-                print(f"[HF] Checkpoint {state.global_step} pushed to '{CPT_REVISION}'.")
-            except Exception as exc:
-                print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+        ckpt_dir = (
+            kwargs.get("output_dir")
+            or os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        )
+        if not ckpt_dir or not os.path.isdir(ckpt_dir):
+            return control
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            return control
+        try:
+            print(f"\n[HF] Pushing checkpoint {state.global_step} to '{CPT_REVISION}'...")
+            from huggingface_hub import upload_folder
+            upload_folder(
+                repo_id="ozaa77/Cogito-0.9",
+                folder_path=ckpt_dir,
+                revision=CPT_REVISION,
+                commit_message=f"checkpoint-{state.global_step}",
+                token=hf_token,
+            )
+            print(f"[HF] Checkpoint {state.global_step} pushed to '{CPT_REVISION}'.")
+        except Exception as exc:
+            print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+
+class SaveAtEpochEndCallback(TrainerCallback):
+    """Also checkpoint+push when each epoch completes, not just at 50-step marks.
+
+    HF's save_strategy='steps' only saves at exact step multiples. If an epoch or the
+    whole run ends on a step that isn't a multiple of 50, nothing would be recorded.
+    This flags should_save at every epoch boundary so the finished state is always
+    persisted (and mirrored to the Hub) regardless of step count.
+    """
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if not IS_MAIN_PROCESS:
+            return control
+        control.should_save = True
+        return control
+
 
 class EvalCogitoCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
@@ -434,7 +455,7 @@ try:
             max_seq_length=MAX_SEQ_LENGTH,
             dataset_text_field="text",
             packing=False,
-            callbacks=[EvalCogitoCallback(), SavePeftModelCallback()],
+            callbacks=[EvalCogitoCallback(), SaveAtEpochEndCallback(), SavePeftModelCallback()],
         )
 
         trainer = train_on_responses_only(
