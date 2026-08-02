@@ -30,7 +30,7 @@ if args.model:
 else:
     BASE_MODEL = ABLITERATED_MODEL if os.path.exists(ABLITERATED_MODEL) else "Qwen/Qwen2.5-Coder-14B"
 
-MAX_SEQ_LENGTH = 4096                                                                
+MAX_SEQ_LENGTH = 2048                                                                
 LOAD_IN_4BIT = True                                                   
 DTYPE = None                                                                  
 print(f"\n{'='*60}")
@@ -51,8 +51,8 @@ tokenizer = get_chat_template(
 )
 model = FastLanguageModel.get_peft_model(
     model,
-    r=128,                                                                    
-    lora_alpha=256,                                                  
+    r=32,                                                                    
+    lora_alpha=64,                                                  
     lora_dropout=0.05,                                                  
     target_modules=[                                                     
         "q_proj", "k_proj", "v_proj", "o_proj",              
