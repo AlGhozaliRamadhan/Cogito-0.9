@@ -42,6 +42,12 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype=DTYPE,
     load_in_4bit=LOAD_IN_4BIT,
 )
+
+from unsloth.chat_templates import get_chat_template
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template="chatml",
+)
 model = FastLanguageModel.get_peft_model(
     model,
     r=128,                                                                    
