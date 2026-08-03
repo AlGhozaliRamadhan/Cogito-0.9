@@ -194,8 +194,8 @@ def format_example(example):
         )
     }
 
-from trl import SFTTrainer
-from transformers import TrainingArguments, TrainerCallback
+from trl import SFTTrainer, SFTConfig
+from transformers import TrainerCallback
 from unsloth.chat_templates import train_on_responses_only
 
 CPT_REVISION = "main"  # Checkpoints always land on the Hub's main branch, never a new one.
@@ -324,7 +324,11 @@ def get_chat_eos_token_id(tokenizer):
 
 CHAT_EOS_TOKEN_ID = get_chat_eos_token_id(tokenizer)
 print(f"[TOKENIZER] ChatML end-of-turn token id: {CHAT_EOS_TOKEN_ID}")
-training_args = TrainingArguments(
+# SFTConfig (a TrainingArguments subclass) is used instead of TrainingArguments to
+# avoid a pickling error during checkpoint saves when Unsloth patches TRL internals.
+# SFTTrainer internally converts TrainingArguments -> SFTConfig, which breaks class
+# identity checks in Python's pickle; passing SFTConfig directly bypasses this.
+training_args = SFTConfig(
     output_dir=TRAINING_OUTPUT_DIR,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=16,
@@ -351,6 +355,10 @@ training_args = TrainingArguments(
     dataloader_pin_memory=True,
     ddp_find_unused_parameters=False,
     push_to_hub=False,  # The completed adapter is pushed manually once, on main.
+    # SFTConfig-specific fields (avoids deprecation warnings when passed to SFTTrainer)
+    max_seq_length=MAX_SEQ_LENGTH,
+    dataset_text_field="text",
+    packing=False,
 )
 
 # Where to resume from, in priority order:
@@ -461,9 +469,6 @@ try:
             tokenizer=tokenizer,
             train_dataset=dataset,
             args=training_args,
-            max_seq_length=MAX_SEQ_LENGTH,
-            dataset_text_field="text",
-            packing=False,
             callbacks=[EvalCogitoCallback(), SaveAtEpochEndCallback(), SavePeftModelCallback()],
         )
 
