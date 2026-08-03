@@ -62,7 +62,7 @@ if args.model:
 else:
     BASE_MODEL = ABLITERATED_MODEL if os.path.exists(ABLITERATED_MODEL) else "Qwen/Qwen2.5-Coder-14B"
 
-MAX_SEQ_LENGTH = 2048                                                                
+MAX_SEQ_LENGTH = 1024  # Reduced from 2048: activation memory is linear with seq_len — biggest OOM lever on T4 x2
 LOAD_IN_4BIT = True                                                   
 DTYPE = None                                                                  
 print(f"\n{'='*60}")
@@ -83,8 +83,8 @@ tokenizer = get_chat_template(
 )
 model = FastLanguageModel.get_peft_model(
     model,
-    r=32,                                                                    
-    lora_alpha=64,                                                  
+    r=16,           # Reduced from 32: halves LoRA gradient memory on T4 x2
+    lora_alpha=32,  # Kept at 2x r (standard ratio)
     lora_dropout=0.05,                                                  
     target_modules=[                                                     
         "q_proj", "k_proj", "v_proj", "o_proj",              
@@ -331,7 +331,7 @@ print(f"[TOKENIZER] ChatML end-of-turn token id: {CHAT_EOS_TOKEN_ID}")
 training_args = SFTConfig(
     output_dir=TRAINING_OUTPUT_DIR,
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=16,
+    gradient_accumulation_steps=32,  # Doubled (was 16) to keep effective batch size = 32 after seq_len halved
     learning_rate=2e-5,                                    
     lr_scheduler_type="cosine",                      
     warmup_ratio=0.05,                            
