@@ -107,7 +107,7 @@ def check_ratios(records: list[dict]) -> None:
 
 def main():
     try:
-        from datasets import Dataset
+        from datasets import Dataset, Features, Sequence, Value
         from huggingface_hub import HfApi
     except ImportError:
         print("[ERROR] Install: pip install datasets huggingface_hub")
@@ -119,12 +119,23 @@ def main():
     records = load_dense_records(DENSE_DATASET_PATH)
     check_ratios(records)
 
-    # Serialize messages list as JSON string for Parquet compatibility
+    # Normalise records to the canonical HF schema:
+    #   messages -> native list of dicts (NOT a JSON string)
+    #   source   -> the shard multiplier tag (renamed from 'oversample')
+    # Keeping messages as a proper list lets HF store them as a Sequence column
+    # so load_dataset() and the HF viewer can decode them without a CastError.
+    normalised = []
     for r in records:
-        if isinstance(r.get("messages"), list):
-            r["messages"] = json.dumps(r["messages"], ensure_ascii=False)
+        messages = r.get("messages", [])
+        if isinstance(messages, str):
+            messages = json.loads(messages)  # should already be a list after load_dense_records
+        normalised.append({
+            "messages": messages,
+            # 'oversample' is the internal key; expose it as 'source' on HF
+            "source": str(r.get("oversample") or r.get("source") or "unknown"),
+        })
 
-    ds = Dataset.from_list(records)
+    ds = Dataset.from_list(normalised)
     print(f"\n[HF] Pushing {len(ds)} records to {DATASET_REPO_ID} ...")
     ds.push_to_hub(
         DATASET_REPO_ID,
