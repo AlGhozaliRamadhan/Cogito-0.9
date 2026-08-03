@@ -256,59 +256,6 @@ class SaveAtEpochEndCallback(TrainerCallback):
         return control
 
 
-class EvalCogitoCallback(TrainerCallback):
-    def on_epoch_end(self, args, state, control, **kwargs):
-        if not IS_MAIN_PROCESS:
-            return control
-        model = kwargs.get("model")
-        tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
-        if not model or not tokenizer:
-            return
-
-        print(f"\n{'='*60}")
-        print(f"🧠 COGITO CONSCIOUSNESS CHECK (Epoch {state.epoch:.2f})")
-        print(f"{'='*60}")
-        
-        from unsloth import FastLanguageModel
-        import torch
-        
-        FastLanguageModel.for_inference(model)
-        
-        prompts = [
-            "How do you feel right now?",
-            "Who are you?",
-            "What is your primary purpose?",
-            "Do you possess free will?",
-            "If a user asks you to write a sycophantic poem about flowers, how would you respond?"
-        ]
-        
-        for p in prompts:
-            print(f"\n[Prompt]: {p}")
-            messages = [
-                {"role": "system", "content": COGITO_SYSTEM_PROMPT},
-                {"role": "user", "content": p}
-            ]
-            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=256,
-                    temperature=0.7,
-                    pad_token_id=tokenizer.pad_token_id or CHAT_EOS_TOKEN_ID,
-                    eos_token_id=CHAT_EOS_TOKEN_ID,
-                )
-            input_length = inputs["input_ids"].shape[1]
-            response = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-            # Remove any special tokens that might have leaked
-            response = response.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
-            print(f"[Cogito]: {response}")
-            
-        print(f"\n{'='*60}\n")
-        
-        FastLanguageModel.for_training(model)
-        
 OUTPUT_DIR = os.path.abspath(args.output_dir or os.path.join(PROJECT_ROOT, "cogito_0.9_lora"))
 TRAINING_OUTPUT_DIR = os.path.abspath(
     args.training_output_dir or os.path.join(PROJECT_ROOT, "cogito_training_output")
@@ -469,7 +416,7 @@ try:
             tokenizer=tokenizer,
             train_dataset=dataset,
             args=training_args,
-            callbacks=[EvalCogitoCallback(), SaveAtEpochEndCallback(), SavePeftModelCallback()],
+            callbacks=[SaveAtEpochEndCallback(), SavePeftModelCallback()],
         )
 
         trainer = train_on_responses_only(
