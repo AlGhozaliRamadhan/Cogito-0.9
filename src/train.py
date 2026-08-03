@@ -169,9 +169,12 @@ def audit_dataset(dataset, dataset_name):
 
     if not args.allow_unbalanced_dataset and (identity_ratio < 0.20 or probing_ratio < 0.08):
         raise ValueError(
-            "Refusing an identity-starved dataset. Cogito needs at least 20% identity-core and "
-            "8% philosophical-probing records; this input is the old generic/80:20 curriculum. "
-            "Use `python data/build_dense_dataset.py` and train the resulting combined_dense_dataset.jsonl."
+            f"Refusing an identity-starved dataset ({dataset_name}). "
+            f"Got identity={identity_ratio:.1%} (need ≥20%) and probing={probing_ratio:.1%} (need ≥8%). "
+            "The HuggingFace dataset must be the multiplied dense build, not the raw shards. "
+            "Fix: run `python data/build_dense_dataset.py` locally, then "
+            "`python scripts/upload_dense_dataset_to_hub.py` to push the correct 7068-record dataset. "
+            "Or pass --allow-unbalanced-dataset to skip this check."
         )
 
 
