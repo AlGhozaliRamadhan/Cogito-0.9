@@ -8,7 +8,8 @@
 #   pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 #
 # For Unsloth (fast LoRA kernels), install separately:
-#   pip install "unsloth[cu121-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+#   (for Kaggle notebooks: pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 # =============================================================================
 
 # --- Core Training Stack ---
