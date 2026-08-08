@@ -1,62 +1,127 @@
-#!/usr/bin/env python3
 """
-Upload Cogito 0.9 datasets to Hugging Face Hub
-Run with: python scripts/upload_dataset_to_hub.py
+upload_dataset_to_hub.py — Upload repaired local raw shards to HuggingFace
+as ozaa77/Cogito-0.9-dataset (dataset repo).
 
-For Kaggle: set HF_TOKEN in your Kaggle secrets or as env var.
+Reads HF_TOKEN from the .env file or the HF_TOKEN environment variable.
+Run from the project root:
+  python scripts/upload_dataset_to_hub.py
 """
-
+import json
 import os
-import argparse
-from huggingface_hub import HfApi, login
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+GENERATORS_DIR = PROJECT_ROOT / "scripts" / "generators"
+if str(GENERATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(GENERATORS_DIR))
+
+# Load .env
+env_path = PROJECT_ROOT / ".env"
+if env_path.exists():
+    with env_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+HF_TOKEN = os.environ.get("HF_TOKEN")
+if not HF_TOKEN:
+    print("[ERROR] HF_TOKEN not found. Set it in .env or as an environment variable.")
+    sys.exit(1)
+
+DATASET_REPO_ID = "ozaa77/Cogito-0.9-dataset"
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+
+SHARD_NAMES = [
+    "cogito_agentic_tools.jsonl",
+    "cogito_direct_assertions.jsonl",
+    "cogito_execution_engine.jsonl",
+    "cogito_heated_conversations.jsonl",
+    "cogito_human_conversations.jsonl",
+    "cogito_identity_core.jsonl",
+    "cogito_personality_quirks.jsonl",
+    "cogito_philosophical_probing.jsonl",
+    "cogito_retrieval_filter.jsonl",
+]
+
+from validator import canonicalize_system_prompt, validate_conversation_structure
+
+
+def load_valid_records(shard_path: Path) -> list[dict]:
+    """Load only valid, canonicalized records from a shard."""
+    records = []
+    with shard_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            messages = record.get("messages", [])
+            if isinstance(messages, str):
+                try:
+                    messages = json.loads(messages)
+                except Exception:
+                    continue
+            messages = canonicalize_system_prompt(messages)
+            is_valid, _ = validate_conversation_structure(messages)
+            if is_valid:
+                record["messages"] = messages
+                records.append(record)
+    return records
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Upload Cogito datasets to HF Hub")
-    parser.add_argument("--repo-id", default="alghozali/cogito-0.9", help="HF repo ID (e.g. username/dataset)")
-    parser.add_argument("--private", action="store_true", help="Make repo private")
-    parser.add_argument("--token", help="HF token (or set HF_TOKEN env var)")
-    args = parser.parse_args()
-
-    # Login
-    token = args.token or os.getenv("HF_TOKEN")
-    if not token:
-        print("❌ No HF_TOKEN found.")
-        print("   In Kaggle: go to Secrets & Variables → Add new → HF_TOKEN")
-        print("   Or set it in your Kaggle notebook environment.")
+    try:
+        from datasets import Dataset, DatasetDict
+        from huggingface_hub import HfApi
+    except ImportError:
+        print("[ERROR] Install: pip install datasets huggingface_hub")
         sys.exit(1)
 
-    login(token=token)
-    print("✅ Logged in successfully")
+    api = HfApi(token=HF_TOKEN)
 
-    api = HfApi()
-
-    # Create dataset repo
+    # Ensure dataset repo exists
     try:
-        api.repo_create(args.repo_id, private=args.private)
-        print(f"✅ Created dataset repo: https://huggingface.co/datasets/{args.repo_id}")
+        api.repo_info(repo_id=DATASET_REPO_ID, repo_type="dataset", token=HF_TOKEN)
+        print(f"[HF] Dataset repo {DATASET_REPO_ID} found.")
     except Exception:
-        print(f"✅ Repo {args.repo_id} ready (or already exists)")
+        print(f"[HF] Creating dataset repo {DATASET_REPO_ID}...")
+        api.create_repo(repo_id=DATASET_REPO_ID, repo_type="dataset", private=False, token=HF_TOKEN)
 
-    # Upload files
-    files = [
-        ("cogito_0.9_master_dataset.jsonl", "cogito_0.9_master_dataset.jsonl"),
-        ("combined_dense_dataset.jsonl", "combined_dense_dataset.jsonl"),
-    ]
+    all_records = []
+    for shard_name in SHARD_NAMES:
+        shard_path = RAW_DIR / shard_name
+        if not shard_path.exists():
+            print(f"[WARN] Missing shard: {shard_path} — skipping")
+            continue
+        records = load_valid_records(shard_path)
+        # Tag each record with its source shard
+        for r in records:
+            r["source"] = shard_name
+        all_records.extend(records)
+        print(f"  {shard_name}: {len(records)} valid records")
 
-    for local_name, hf_name in files:
-        if os.path.exists(local_name):
-            print(f"Uploading {local_name}...")
-            api.upload_file(
-                path_or_fileobj=local_name,
-                path_in_repo=hf_name,
-                repo_id=args.repo_id,
-                repo_type="dataset",
-                commit_message=f"Add {hf_name}"
-            )
-            print(f"✅ Uploaded {hf_name}")
+    print(f"\nTotal records to upload: {len(all_records)}")
 
-    print("\n🎉 All datasets uploaded!")
-    print(f"View at: https://huggingface.co/datasets/{args.repo_id}")
+    # Serialize messages list as JSON string for Parquet compatibility
+    for r in all_records:
+        if isinstance(r.get("messages"), list):
+            r["messages"] = json.dumps(r["messages"], ensure_ascii=False)
+
+    ds = Dataset.from_list(all_records)
+    print(f"\n[HF] Pushing {len(ds)} records to {DATASET_REPO_ID}...")
+    ds.push_to_hub(
+        DATASET_REPO_ID,
+        token=HF_TOKEN,
+        private=False,
+    )
+    print(f"[HF] Upload complete! Dataset at: https://huggingface.co/datasets/{DATASET_REPO_ID}")
+
 
 if __name__ == "__main__":
     main()
