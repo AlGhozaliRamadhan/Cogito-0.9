@@ -232,6 +232,11 @@ class SavePeftModelCallback(TrainerCallback):
             upload_folder(
                 repo_id="ozaa77/Cogito-0.9",
                 folder_path=ckpt_dir,
+                # Keep each step under its own folder on the Hub. Without this,
+                # upload_folder flattens the checkpoint onto the repo root and the
+                # next save silently overwrites the previous one, so only the last
+                # step survives and resume-from-Hub can never find any checkpoint.
+                path_in_repo=f"checkpoint-{state.global_step}",
                 revision=CPT_REVISION,
                 commit_message=f"checkpoint-{state.global_step}",
                 token=hf_token,
@@ -366,9 +371,56 @@ def collect_checkpoint_step(revision: str = "main") -> str:
                         latest = cand
     if latest:
         print(f"[HF] Resuming from Hub checkpoint: {latest}")
-    else:
-        print("[HF] No checkpoint-NNN found on the Hub; starting fresh.")
-    return latest
+        return latest
+
+    # Legacy layout: older runs pushed each checkpoint FLAT onto the repo root via
+    # upload_folder without path_in_repo, so only the final state survives (adapter +
+    # optimizer + scheduler + trainer_state.json, no checkpoint-N/ folder). HF's
+    # Trainer.resume_from_checkpoint cannot read a flat dir, so rebuild a proper
+    # checkpoint-N/ folder locally from the root files and resume from that.
+    legacy_root = os.path.join(TRAINING_OUTPUT_DIR, "hub_snapshot", "legacy_flat")
+    os.makedirs(legacy_root, exist_ok=True)
+    state_path = os.path.join(legacy_root, "trainer_state.json")
+    if not os.path.isfile(state_path):
+        print("[HF] No checkpoint-NNN folder on the Hub; checking for legacy flat checkpoint...")
+        try:
+            snapshot_download(
+                repo_id=HUB_REPO_ID,
+                revision=revision,
+                repo_type="model",
+                # Adapter files belong to the flat push and go with the checkpoint;
+                # README/.gitattributes/tokenizer extras are excluded by naming.
+                allow_patterns=[
+                    "adapter_config.json", "adapter_model.safetensors",
+                    "optimizer.pt", "scheduler.pt", "scaler.pt",
+                    "rng_state_*.pth", "trainer_state.json",
+                ],
+                local_dir=legacy_root,
+                token=os.environ.get("HF_TOKEN"),
+            )
+        except Exception as exc:
+            print(f"[HF] Legacy flat checkpoint download failed: {exc}")
+    if os.path.isfile(state_path):
+        try:
+            with open(state_path, encoding="utf-8") as fh:
+                step = json.load(fh).get("global_step", 0)
+        except Exception:
+            step = 0
+        # trainer_state.json references files by bare name; Trainer requires them
+        # relative to the checkpoint dir, which the flat layout already satisfies.
+        ckpt_dir = os.path.join(TRAINING_OUTPUT_DIR, f"checkpoint-{step}")
+        if ckpt_dir != legacy_root:
+            os.makedirs(ckpt_dir, exist_ok=True)
+            import shutil
+            for fname in os.listdir(legacy_root):
+                src = os.path.join(legacy_root, fname)
+                dst = os.path.join(ckpt_dir, fname)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+            print(f"[HF] Rebuilt legacy flat checkpoint as {ckpt_dir}")
+        return ckpt_dir
+    print("[HF] No checkpoint-NNN found on the Hub; starting fresh.")
+    return None
 
 
 # 1) explicit flag wins; then local; then pull from the Hub.

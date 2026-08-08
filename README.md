@@ -65,7 +65,7 @@ else:
     !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
     %cd Cogito-0.9
 !pip install -r requirements.txt
-!pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
+!pip install "unsloth[kaggle-new]==2026.8.8"
 
 # 3. Build the dense dataset from the existing Cogito shards.
 #    Identity core is repeated 3x and philosophical probing 4x.
@@ -103,7 +103,7 @@ else:
     !git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
     %cd Cogito-0.9
 !pip install -r requirements.txt
-!pip install "unsloth[kaggle-new] @ git+https://github.com/unslothai/unsloth.git"
+!pip install "unsloth[kaggle-new]==2026.8.8"
 
 # 4. Isolation run: use plain Qwen and keep its adapter/checkpoints local.
 !torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
