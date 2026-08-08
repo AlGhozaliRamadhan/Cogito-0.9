@@ -200,8 +200,98 @@ from unsloth.chat_templates import train_on_responses_only
 
 CPT_REVISION = "main"  # Checkpoints always land on the Hub's main branch, never a new one.
 
+# Checkpoint Hub pushes MUST NOT run synchronously inside the DDP training loop:
+# the upload runs only on rank 0 and takes minutes for ~425MB, so rank 1 races
+# ahead into the next gradient collective (all_gather/all_reduce) while rank 0 is
+# still uploading. NCCL's watchdog then times the desynced collective out after 30
+# minutes and kills the whole run (observed on 2x T4). So on_save only enqueues a
+# checkpoint dir and returns instantly; a single daemon thread uploads the dirs in
+# order. Because upload_folder only commits its revision at the end, a process
+# killed mid-upload leaves the Hub at the previous checkpoint, so resume stays safe.
+import queue
+import threading
+
+_checkpoint_upload_queue: "queue.Queue[str | None]" = queue.Queue()
+_checkpoint_upload_stop = threading.Event()
+
+
+HUB_KEEP_CHECKPOINTS = 2  # Keep the N most recent checkpoints on the Hub; prune the rest.
+
+
+def _prune_old_hub_checkpoints(hf_token: str):
+    """Delete older checkpoint-N/ dirs on the Hub, keeping the HUB_KEEP_CHECKPOINTS
+    most recent. Keeps the repo lean (~2 x 424MB instead of one per 50 steps)."""
+    from huggingface_hub import HfApi
+
+    try:
+        api = HfApi()
+        entries = api.list_repo_tree(
+            repo_id=HUB_REPO_ID,
+            revision=CPT_REVISION,
+            repo_type="model",
+            token=hf_token,
+            recursive=False,
+        )
+        steps = []
+        for entry in entries:
+            name = getattr(entry, "path", "")
+            if entry.type == "folder" and name.startswith("checkpoint-"):
+                try:
+                    steps.append(int(name.split("-")[-1]))
+                except ValueError:
+                    continue
+        if len(steps) <= HUB_KEEP_CHECKPOINTS:
+            return
+        stale = sorted(steps)[:-HUB_KEEP_CHECKPOINTS]
+        for step in stale:
+            print(f"[HF] Pruning old checkpoint-{step} from Hub...")
+            api.delete_folder(
+                repo_id=HUB_REPO_ID,
+                repo_type="model",
+                folder_path=f"checkpoint-{step}",
+                revision=CPT_REVISION,
+                token=hf_token,
+            )
+    except Exception as exc:
+        print(f"[HF] Prune checkpoints failed (non-fatal): {exc}")
+
+
+def _checkpoint_upload_worker(hf_token: str):
+    """Background uploader. None in the queue is the shutdown sentinel."""
+    from huggingface_hub import upload_folder
+
+    while True:
+        ckpt_dir = _checkpoint_upload_queue.get()
+        try:
+            if ckpt_dir is None or _checkpoint_upload_stop.is_set():
+                return
+            step = int(os.path.basename(ckpt_dir).split("-")[-1])
+            print(f"\n[HF] Pushing checkpoint {step} to '{CPT_REVISION}'...")
+            upload_folder(
+                repo_id="ozaa77/Cogito-0.9",
+                folder_path=ckpt_dir,
+                # Keep each step under its own folder on the Hub. Without this,
+                # upload_folder flattens the checkpoint onto the repo root and the
+                # next save silently overwrites the previous one, so only the last
+                # step survives and resume-from-Hub can never find any checkpoint.
+                path_in_repo=f"checkpoint-{step}",
+                revision=CPT_REVISION,
+                commit_message=f"checkpoint-{step}",
+                token=hf_token,
+            )
+            print(f"[HF] Checkpoint {step} pushed to '{CPT_REVISION}'.")
+            _prune_old_hub_checkpoints(hf_token)
+        except Exception as exc:
+            print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+        finally:
+            _checkpoint_upload_queue.task_done()
+
+
+_checkpoint_upload_thread: "threading.Thread | None" = None
+
+
 class SavePeftModelCallback(TrainerCallback):
-    """Push each native training checkpoint to the Hub's main branch.
+    """Enqueue each saved checkpoint to the background Hub uploader.
 
     HF's save_strategy='steps' already writes the full checkpoint (adapter weights,
     trainer_state.json with the step counter, optimizer/scheduler state) to
@@ -215,6 +305,7 @@ class SavePeftModelCallback(TrainerCallback):
         # things that set control.should_save). Mirrors the just-written checkpoint
         # to the Hub so a stop at a non-50 step still persists. kwarg 'output_dir' is
         # the dir HF actually wrote this checkpoint to.
+        global _checkpoint_upload_thread
         if not IS_MAIN_PROCESS or not PUSH_CHECKPOINTS:
             return control
         ckpt_dir = (
@@ -226,24 +317,23 @@ class SavePeftModelCallback(TrainerCallback):
         hf_token = os.environ.get("HF_TOKEN")
         if not hf_token:
             return control
-        try:
-            print(f"\n[HF] Pushing checkpoint {state.global_step} to '{CPT_REVISION}'...")
-            from huggingface_hub import upload_folder
-            upload_folder(
-                repo_id="ozaa77/Cogito-0.9",
-                folder_path=ckpt_dir,
-                # Keep each step under its own folder on the Hub. Without this,
-                # upload_folder flattens the checkpoint onto the repo root and the
-                # next save silently overwrites the previous one, so only the last
-                # step survives and resume-from-Hub can never find any checkpoint.
-                path_in_repo=f"checkpoint-{state.global_step}",
-                revision=CPT_REVISION,
-                commit_message=f"checkpoint-{state.global_step}",
-                token=hf_token,
+        if _checkpoint_upload_thread is None:
+            _checkpoint_upload_thread = threading.Thread(
+                target=_checkpoint_upload_worker,
+                args=(hf_token,),
+                daemon=True,
+                name="hub-checkpoint-uploader",
             )
-            print(f"[HF] Checkpoint {state.global_step} pushed to '{CPT_REVISION}'.")
-        except Exception as exc:
-            print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+            _checkpoint_upload_thread.start()
+        # Enqueue and return immediately; the worker handles the network I/O.
+        _checkpoint_upload_queue.put(ckpt_dir)
+        return control
+
+
+def _flush_checkpoint_uploads():
+    """Block until every enqueued checkpoint has been pushed (call at end of run)."""
+    if _checkpoint_upload_thread is not None:
+        _checkpoint_upload_queue.join()
 
 class SaveAtEpochEndCallback(TrainerCallback):
     """Also checkpoint+push when each epoch completes, not just at 50-step marks.
@@ -488,6 +578,10 @@ try:
 except Exception as e:
     print(f"\n[FATAL] Training crashed: {e}")
     raise
+# Block until every enqueued checkpoint has actually reached the Hub. The worker
+# thread is a daemon, so without this the process would exit and drop the last
+# uploads (the epoch-end save) even though training itself finished fine.
+_flush_checkpoint_uploads()
 if IS_MAIN_PROCESS:
     print(f"[SAVE] Saving LoRA adapter to: {OUTPUT_DIR}")
     model.save_pretrained(OUTPUT_DIR)
