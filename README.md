@@ -128,7 +128,7 @@ python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 --output
 
 ### Abliterate the Trained Model (No Retraining)
 
-Abliteration is a weight edit, so it can be applied to the FINAL trained weights — no retraining. On Kaggle (20GB `/kaggle/working` quota) use `--adapter` mode: the adapter is merged into its base **in GPU memory**, abliterated, and streamed to the Hub shard-by-shard, so nothing big is ever written to disk:
+Abliteration is a weight edit, so it can be applied to the FINAL trained weights — no retraining. On Kaggle (20GB `/kaggle/working` quota) use `--adapter` mode: the adapter loads with its base in fp16 across GPU + CPU RAM, gets abliterated, and is output as a **merged 4-bit model (~10GB)** — the only size that fits Kaggle's disk. Pass `--merge-method merged_16bit` only on machines with ~60GB free disk.
 
 ```bash
 # One command on Kaggle 2x T4 — merge + abliterate + smoke-test + push:

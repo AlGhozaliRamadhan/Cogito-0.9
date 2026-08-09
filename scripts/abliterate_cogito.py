@@ -17,14 +17,13 @@
 #                                save the output, so run it on a machine with
 #                                room (not Kaggle's 20GB /kaggle/working).
 #
-# 2) --adapter <LoRA>            Abliterate the TRAINED model without retraining
-#                                and without a 28GB disk write: the adapter is
-#                                loaded with its base in fp16 IN MEMORY (split
-#                                across both T4s, overflow to CPU RAM), the
-#                                refusal direction is computed from the trained
-#                                weights, and the result is streamed to the Hub
-#                                shard-by-shard. Use with --push-to-hub on
-#                                Kaggle:
+# 2) --adapter <LoRA>            Abliterate the TRAINED model without retraining:
+#                                the adapter is loaded with its base in fp16 in
+#                                memory (split across both T4s, overflow to CPU
+#                                RAM), the refusal direction is computed from
+#                                the trained weights, and the result is output
+#                                as merged_4bit (~10GB — fits Kaggle's 20GB
+#                                disk). Use with --push-to-hub on Kaggle:
 #
 #     python scripts/abliterate_cogito.py \
 #         --adapter ozaa77/Cogito-0.9/checkpoint-330 \
@@ -90,6 +89,14 @@ def main():
         "Qwen2.5-Coder-14B-Cogito-Abliterated, or Cogito-0.9-Abliterated in --adapter mode)",
     )
     parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
+    parser.add_argument(
+        "--merge-method",
+        default=None,
+        choices=["merged_16bit", "merged_4bit"],
+        help="How to output the abliterated model (default: merged_4bit in --adapter "
+        "mode so the ~10GB file fits Kaggle's 20GB disk; merged_16bit only on "
+        "machines with ~60GB free)",
+    )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9-abliterated", help="Hub repo for --push-to-hub")
     parser.add_argument(
@@ -102,6 +109,7 @@ def main():
 
     from_adapter = args.adapter is not None
     BASE_MODEL = args.model
+    merge_method = args.merge_method or ("merged_4bit" if from_adapter else "merged_16bit")
     if args.output_dir:
         SAVE_PATH = args.output_dir
     elif from_adapter:
@@ -119,25 +127,58 @@ def main():
         print(f"[ADAPTER] Using trained adapter: {adapter_path}")
         from unsloth import FastLanguageModel
 
-        # Load fp16 DIRECTLY (28GB). dequantize() is a dead end here: it
-        # materializes fp16 on top of the 4-bit copy, needing ~37GB on 2x T4
-        # (29GB usable) -> OOM. device_map="auto" fits the 28GB by offloading
-        # the ~1.5GB overflow to CPU RAM, exactly like the --model mode already
-        # does. The 29GB weight download to the HF cache worked fine last run.
-        print("Loading adapter + base in fp16 (28GB; overflow layers go to CPU RAM)...")
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=adapter_path,
-            max_seq_length=1024,
-            dtype=torch.float16,
-            load_in_4bit=False,
-            device_map="auto",  # splits across both T4s, offloads overflow to CPU
-            token=hf_token or None,
+        # Use the base model the adapter was ACTUALLY trained on for the device
+        # map (falls back to --model's default if adapter_config.json is missing).
+        recorded_base = None
+        adapter_config_path = os.path.join(adapter_path, "adapter_config.json")
+        if os.path.isfile(adapter_config_path):
+            with open(adapter_config_path, encoding="utf-8") as fh:
+                recorded_base = json.load(fh).get("base_model_name_or_path")
+        map_base = recorded_base or BASE_MODEL
+        print(f"[ADAPTER] adapter_config.json records base model: {recorded_base or '(none)'}")
+
+        # fp16 14B (29.4GB) exceeds 2x T4 usable VRAM (~29GB), so a few layers
+        # must live in CPU RAM. device_map="auto" puts those on the META device
+        # and PEFT's adapter re-dispatch then fails demanding an offload_dir.
+        # Building an EXPLICIT map with the overflow on 'cpu' dispatches into
+        # RAM instead — the documented workaround for that ValueError.
+        print("Computing an explicit device map (GPU split + CPU RAM overflow)...")
+        from accelerate import infer_auto_device_map
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(map_base, token=hf_token or None)
+        with torch.device("meta"):
+            meta_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
+        device_map = infer_auto_device_map(
+            meta_model,
+            max_memory={0: "13GiB", 1: "13GiB", "cpu": "30GiB"},
+            no_split_module_classes=getattr(meta_model, "_no_split_modules", None),
         )
+        del meta_model
         torch.cuda.empty_cache()
-        device_map = getattr(model, "hf_device_map", None)
-        print(f"[GPU] Model device map: {device_map}")
-        if device_map and all("cpu" in str(d).lower() for d in device_map.values()):
-            raise SystemExit("[FATAL] Model landed entirely on CPU — not enough VRAM to abliterate.")
+        cpu_modules = sum(1 for d in device_map.values() if str(d) == "cpu")
+        print(f"[GPU] Device map: {len(device_map)} modules total, {cpu_modules} overflowed to CPU RAM")
+
+        print("Loading adapter + base in fp16 (28GB)...")
+        try:
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=adapter_path,
+                max_seq_length=1024,
+                dtype=torch.float16,
+                load_in_4bit=False,
+                device_map=device_map,
+                token=hf_token or None,
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"[FATAL] Failed to load adapter+base: {exc}\n"
+                f"  If this is the peft 'offload_dir' dispatch error, the explicit device-map\n"
+                f"  workaround was not enough on this library combo. Alternatives:\n"
+                f"   - Run abliteration on a machine with a 24GB+ GPU and ~60GB free disk,\n"
+                f"     using --model on the merged model (scripts/merge_lora.py --push-to-hub first).\n"
+                f"   - Or share the full traceback here."
+            ) from exc
+        torch.cuda.empty_cache()
         model.eval()
         torch.cuda.empty_cache()
     else:
@@ -295,12 +336,13 @@ def main():
             raise SystemExit("[FATAL] --push-to-hub requires a token: pass --token or set HF_TOKEN.")
         print(f"Pushing abliterated model to https://huggingface.co/{args.push_repo} ...")
         if from_adapter:
-            # Adapter mode: Unsloth streams the merged 16-bit model to the Hub
-            # shard-by-shard, so Kaggle's 20GB disk quota is not a problem.
+            # Adapter mode: Unsloth merges and writes the abliterated model as a
+            # temp file before uploading. merged_4bit (~10GB) fits Kaggle's 20GB
+            # quota; merged_16bit (28GB) only on machines with ~60GB free.
             model.push_to_hub_merged(
                 repo_id=args.push_repo,
                 tokenizer=tokenizer,
-                save_method="merged_16bit",
+                save_method=merge_method,
                 token=hf_token,
             )
         else:
@@ -315,9 +357,9 @@ def main():
     if from_adapter and args.push_to_hub and not args.output_dir:
         save_locally = False
     if save_locally:
-        print(f"Saving abliterated model to {SAVE_PATH}...")
+        print(f"Saving abliterated model to {SAVE_PATH} (merge method: {merge_method})...")
         if from_adapter:
-            model.save_pretrained_merged(SAVE_PATH, tokenizer, save_method="merged_16bit")
+            model.save_pretrained_merged(SAVE_PATH, tokenizer, save_method=merge_method)
         else:
             model.save_pretrained(SAVE_PATH)
             tokenizer.save_pretrained(SAVE_PATH)
