@@ -53,8 +53,15 @@ def resolve_adapter(adapter_arg: str, token) -> str:
     if os.path.isdir(adapter_arg):
         return os.path.abspath(adapter_arg)
     # A mistyped local path must not fall through into the Hub branch and produce
-    # a cryptic error like repo_id="C:" -> list_repo_tree auth failure.
-    if os.sep in adapter_arg or "\\" in adapter_arg or re.match(r"^[A-Za-z]:", adapter_arg):
+    # a cryptic error like repo_id="C:" -> list_repo_tree auth failure. NOTE:
+    # os.sep is "/" on Linux/Kaggle, so do NOT use it here — a valid Hub id
+    # like "org/repo" also contains slashes. Only unambiguous filesystem signals
+    # (backslash, drive letter, ./ ../ / ~ prefix) count as a local path.
+    if (
+        "\\" in adapter_arg
+        or re.match(r"^[A-Za-z]:", adapter_arg)
+        or adapter_arg.startswith(("./", "../", "/", "~"))
+    ):
         raise SystemExit(f"[FATAL] Local adapter directory not found: {adapter_arg}")
 
     from huggingface_hub import HfApi, RepoFile, RepoFolder, snapshot_download
