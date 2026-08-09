@@ -20,11 +20,16 @@
 # 2) --adapter <LoRA>            Abliterate the TRAINED model on Kaggle without
 #                               retraining and without touching 28GB anywhere.
 #                               Key insight: the orthogonalization edit is
-#                               RANK-1 (W' = W - (W@v̂)⊗v̂), so it is emitted as
-#                               an exact rank-1 LoRA delta adapter (~5MB) that
-#                               loads additively on top of the Cogito adapter:
+#                               RANK-1 per projection (W' = W - (W@v̂)⊗v̂), so it
+#                               is folded INTO the Cogito adapter itself, emitting
+#                               ONE combined adapter (r = cog_r + 1) whose delta
+#                               is EXACTLY Cogito + abliteration:
 #
-#     base(4bit) + Cogito_adapter + abliteration_adapter = abliterated Cogito
+#     base(4bit) + abliterated_Cogito_adapter = abliterated Cogito
+#
+#                               It is a drop-in replacement for the Cogito
+#                               adapter — run.py / merge_lora.py load it exactly
+#                               like the original, no multi-adapter API needed.
 #
 #     python scripts/abliterate_cogito.py \
 #         --adapter ozaa77/Cogito-0.9/checkpoint-330 \
@@ -89,8 +94,8 @@ def read_adapter_base(adapter_path: str):
 def main():
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     parser = argparse.ArgumentParser(
-        description="Abliterate Qwen2.5-Coder-14B (stock base/full model, or emit a rank-1 "
-        "delta adapter for a trained LoRA)."
+        description="Abliterate Qwen2.5-Coder-14B (stock base/full model, or emit a combined "
+        "abliterated adapter for a trained LoRA)."
     )
     parser.add_argument(
         "--model",
@@ -102,14 +107,15 @@ def main():
         "--adapter",
         default=None,
         help="Trained LoRA adapter (local dir, Hub repo id, or repo id/subfolder, e.g. "
-        "ozaa77/Cogito-0.9/checkpoint-330). Emits the abliteration as an exact rank-1 "
-        "LoRA delta adapter — no retraining, no 28GB model anywhere. Load it additively "
-        "on top of the Cogito adapter (run.py --ablit-adapter).",
+        "ozaa77/Cogito-0.9/checkpoint-330). Emits ONE combined abliterated adapter "
+        "(Cogito + abliteration folded together, r = cog_r + 1) — a drop-in "
+        "replacement for the Cogito adapter in run.py / merge_lora.py. No retraining, "
+        "no 28GB model anywhere.",
     )
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Where to save the abliterated model / delta adapter (default: "
+        help="Where to save the abliterated model / adapter (default: "
         "Qwen2.5-Coder-14B-Cogito-Abliterated, or cogito_0.9_abliteration_adapter in "
         "--adapter mode)",
     )
@@ -119,7 +125,7 @@ def main():
     parser.add_argument(
         "--smoke-test",
         action="store_true",
-        help="In --adapter mode: load the generated delta adapter and generate one refusal "
+        help="In --adapter mode: reload the generated adapter and generate one refusal "
         "probe and one persona probe before pushing",
     )
     parser.add_argument("--token", default=None, help="HF token (default: HF_TOKEN env var)")
@@ -353,98 +359,149 @@ def main():
 
     if from_adapter:
         # =====================================================================
-        # 4b. ADAPTER MODE — emit the abliteration as an exact rank-1 LoRA delta.
+        # 4b. ADAPTER MODE — emit ONE combined adapter: "abliterated Cogito".
         #
-        # Orthogonalization is W' = W - (W@v̂)⊗v̂ = W + B@A with rank-1
-        #   B = -(W@v̂)  (out x 1),  A = v̂ᵀ  (1 x in)
-        # which is EXACTLY a LoRA layer with r=1, alpha=1. W here is the
-        # MERGED weight (base + Cogito LoRA), so the delta is computed from the
-        # dequantized 4-bit base plus the Cogito adapter's own delta.
+        # The orthogonalization edit is rank-1 per projection (row edit for
+        # o_proj, column edit for down_proj — see below). Summed with the
+        # Cogito adapter's rank-16 delta, the total delta is rank 17. Rather
+        # than depending on peft's multi-adapter activation API (set_adapter
+        # with a list crashes on some peft versions), emit ONE adapter with
+        # r = cog_r + 1 whose delta is EXACTLY cog_delta + ablit_delta:
+        #   A = [s1*A_cog ; s2*A_ablit]    B = [s1*B_cog, s2*B_ablit]
+        #   s1 = sqrt(cog_scale / scale_new)   s2 = sqrt(1 / scale_new)
+        # where scale_new is the new adapter's peft scale (alpha/r or alpha/√r).
+        # This adapter is a drop-in replacement for the Cogito adapter: run.py
+        # and merge_lora.py load it exactly like the original.
         # =====================================================================
-        print("\nBuilding the rank-1 abliteration delta adapter...")
+        print("\nBuilding the abliterated Cogito adapter (one LoRA, exact)...")
         from transformers.integrations.bitsandbytes import dequantize_bnb_weight
         import safetensors.torch
 
-        # Mirror the Cogito adapter's own config so the format matches this peft
-        # version exactly; override the LoRA hyperparams for the rank-1 delta.
         with open(os.path.join(adapter_path, "adapter_config.json"), encoding="utf-8") as fh:
             cog_cfg = json.load(fh)
-        # Match peft's actual merge scaling (alpha / r, or alpha / sqrt(r) when
-        # the Cogito adapter used rslora) so the rank-1 delta is exact.
         cog_r = cog_cfg.get("r", 1)
         use_rslora = bool(cog_cfg.get("use_rslora", False))
-        cog_scale = cog_cfg.get("lora_alpha", 1) / (cog_r ** (0.5 if use_rslora else 1))
+        cog_alpha = cog_cfg.get("lora_alpha", 1)
+        cog_scale = cog_alpha / (cog_r ** (0.5 if use_rslora else 1))
         print(f"[ADAPTER] Cogito target_modules: {cog_cfg.get('target_modules')} "
-              f"(r={cog_r}, lora_alpha={cog_cfg.get('lora_alpha', 1)})")
+              f"(r={cog_r}, lora_alpha={cog_alpha})")
+
+        r_new = cog_r + 1
+        scale_new = cog_alpha / (r_new ** (0.5 if use_rslora else 1))
+        s1 = (cog_scale / scale_new) ** 0.5
+        s2 = (1.0 / scale_new) ** 0.5
+
         ablit_cfg = {
             k: v for k, v in cog_cfg.items()
-            if k not in ("r", "lora_alpha", "lora_dropout", "target_modules", "init_lora_weights")
+            if k not in ("r", "lora_dropout", "init_lora_weights")
         }
-        # NOTE: only o_proj/down_proj are edited here. Base mode also edits
-        # embed_tokens, which cannot be a Linear LoRA target; the refusal-check
-        # smoke probe is the arbiter. If refusal persists, extend to embed_tokens
-        # via lora_embedding_A/B keys:
-        #   base_model.model.model.embed_tokens.lora_embedding_A.default.weight
         ablit_cfg.update({
-            "r": 1,
-            "lora_alpha": 1,
+            "r": r_new,
             "lora_dropout": 0,
-            "target_modules": ["o_proj", "down_proj"],
-            "inference_mode": True,
             "init_lora_weights": False,
         })
 
+        # Mirror the Cogito target modules, plus o_proj/down_proj which the
+        # abliteration always edits even if the Cogito adapter lacked them.
+        TARGET_LAYER_MODULES = {
+            "q_proj": "self_attn.q_proj",
+            "k_proj": "self_attn.k_proj",
+            "v_proj": "self_attn.v_proj",
+            "o_proj": "self_attn.o_proj",
+            "gate_proj": "mlp.gate_proj",
+            "up_proj": "mlp.up_proj",
+            "down_proj": "mlp.down_proj",
+        }
+        cog_targets = cog_cfg.get("target_modules")
+        if not isinstance(cog_targets, list) or not cog_targets:
+            raise SystemExit(
+                "[FATAL] The Cogito adapter's target_modules is not an explicit list "
+                f"({cog_targets!r}). The combined adapter must mirror every Cogito "
+                "module or the persona deltas would silently vanish. Cannot continue."
+            )
+        unknown = [m for m in cog_targets if m not in TARGET_LAYER_MODULES]
+        if unknown:
+            raise SystemExit(
+                "[FATAL] Cogito adapter targets unknown modules: "
+                f"{unknown} (known: {sorted(TARGET_LAYER_MODULES)}). "
+                "Cannot fold them into the combined adapter safely."
+            )
+        target_modules = [m for m in TARGET_LAYER_MODULES if m in cog_targets]
+        for extra in ("o_proj", "down_proj"):
+            if extra not in target_modules:
+                target_modules.append(extra)
+        ablit_cfg["target_modules"] = target_modules
+        # NOTE: embed_tokens is not editable as a Linear LoRA target (base mode
+        # does edit it). o_proj + down_proj capture the vast majority of the
+        # refusal pathway; the refusal-check smoke probe is the arbiter. If
+        # refusal persists, extend via lora_embedding_A/B keys:
+        #   base_model.model.model.embed_tokens.lora_embedding_A.default.weight
+
         lora_state = {}
         n_layers = model.config.num_hidden_layers
-        for l in tqdm(range(n_layers), desc="Computing rank-1 deltas"):
+        for l in tqdm(range(n_layers), desc="Computing abliterated adapter"):
             layer = model.model.model.layers[l]
-            for proj_name, proj_mod in (
-                ("self_attn.o_proj", layer.self_attn.o_proj),
-                ("mlp.down_proj", layer.mlp.down_proj),
-            ):
-                # Merged weight = dequantized 4-bit base + Cogito LoRA delta.
-                w_base = dequantize_bnb_weight(proj_mod.weight)
+            for proj_name in target_modules:
+                proj_path = TARGET_LAYER_MODULES[proj_name]
+                proj_mod = layer
+                for part in proj_path.split("."):
+                    proj_mod = getattr(proj_mod, part)
+
+                in_f = getattr(proj_mod, "in_features", None)
+                out_f = getattr(proj_mod, "out_features", None)
                 lora_a_mod = getattr(proj_mod, "lora_A", None)
                 lora_b_mod = getattr(proj_mod, "lora_B", None)
                 has_lora = (
                     lora_a_mod is not None and lora_b_mod is not None
                     and "default" in lora_a_mod and "default" in lora_b_mod
                 )
-                if not has_lora:
-                    # The Cogito adapter did not target this projection — the
-                    # delta there is exactly zero.
-                    w_merged = w_base.float()
+                if has_lora:
+                    lora_a = lora_a_mod["default"].weight.detach().float()
+                    lora_b = lora_b_mod["default"].weight.detach().float()
+                    if in_f is None:
+                        in_f = lora_a.shape[1]
+                    if out_f is None:
+                        out_f = lora_b.shape[0]
+                    a_cog = (s1 * lora_a).to(torch.float16).cpu()       # [cog_r, in]
+                    b_cog = (s1 * lora_b).to(torch.float16).cpu()       # [out, cog_r]
                 else:
-                    lora_a = lora_a_mod["default"].weight.detach().to(w_base.dtype)
-                    lora_b = lora_b_mod["default"].weight.detach().to(w_base.dtype)
-                    w_merged = w_base.float() + cog_scale * (lora_b.float() @ lora_a.float())
+                    # Cogito adapter did not target this projection: zero delta.
+                    if in_f is None or out_f is None:
+                        raise SystemExit(
+                            f"[FATAL] Could not determine in/out features of "
+                            f"layers.{l}.{proj_path} (in_f={in_f}, out_f={out_f})."
+                        )
+                    a_cog = torch.zeros(cog_r, in_f, dtype=torch.float16)
+                    b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
-                # Which edit applies depends on where the refusal direction
-                # lives for this projection (it is a hidden/residual-space
-                # vector, 5120-dim):
-                #  - o_proj: input space == output space == residual stream.
-                #    Canonical row edit (blind the layer to v̂ in its input):
-                #    W' = W - (W@v̂)⊗v̂.
-                #  - down_proj: input space is the MLP intermediate space
-                #    (13824), so the row edit is impossible; only its COLUMNS
-                #    (output space = residual stream) can be orthogonalized:
-                #    W' = W - v̂⊗(Wᵀv̂)ᵀ.
-                # Both are exact rank-1 LoRA deltas: B@A with r=1, alpha=1.
-                # Align vec to the layer's device: device_map="auto" could in
-                # principle spill a layer to GPU 1 / CPU, which would make the
-                # matmuls below raise a cross-device error.
-                vec_f = vec_norm.float().to(w_merged.device)
-                if proj_name == "mlp.down_proj":
-                    b_mat = (-vec_f).unsqueeze(1).to(torch.float16).cpu()  # [out, 1]
-                    a_mat = (w_merged.t() @ vec_f).unsqueeze(0).to(torch.float16).cpu()  # [1, in]
+                if proj_name in ("o_proj", "down_proj"):
+                    # Merged weight = dequantized 4-bit base + Cogito LoRA delta.
+                    w_base = dequantize_bnb_weight(proj_mod.weight).float()
+                    w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
+                    # Align vec to the layer's device (device_map could spill a
+                    # layer to GPU 1 / CPU and a cross-device matmul would crash).
+                    vec_f = vec_norm.float().to(w_merged.device)
+                    if proj_name == "down_proj":
+                        # COLUMN edit: the refusal direction only exists in
+                        # down_proj's OUTPUT space (the residual stream); its
+                        # input is the MLP intermediate space (13824 != 5120).
+                        # W' = W - v̂⊗(Wᵀv̂)ᵀ
+                        a_ablit = (w_merged.t() @ vec_f).unsqueeze(0)   # [1, in]
+                        b_ablit = (-vec_f).unsqueeze(1)                 # [out, 1]
+                    else:
+                        # ROW edit (canonical): input space == residual stream.
+                        # W' = W - (W@v̂)⊗v̂
+                        a_ablit = vec_f.unsqueeze(0)                   # [1, in]
+                        b_ablit = (-(w_merged @ vec_f)).unsqueeze(1)   # [out, 1]
+                    a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
+                    b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                 else:
-                    proj = w_merged @ vec_f                              # [out]
-                    b_mat = (-proj).unsqueeze(1).to(torch.float16).cpu()  # [out, 1]
-                    a_mat = vec_f.unsqueeze(0).to(torch.float16).cpu()    # [1, in]
+                    a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
+                    b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
 
-                prefix = f"base_model.model.model.layers.{l}.{proj_name}"
-                lora_state[f"{prefix}.lora_A.default.weight"] = a_mat
-                lora_state[f"{prefix}.lora_B.default.weight"] = b_mat
+                prefix = f"base_model.model.model.layers.{l}.{proj_path}"
+                lora_state[f"{prefix}.lora_A.default.weight"] = torch.cat([a_cog, a_ablit], dim=0)  # [r_new, in]
+                lora_state[f"{prefix}.lora_B.default.weight"] = torch.cat([b_cog, b_ablit], dim=1)  # [out, r_new]
         del model
         torch.cuda.empty_cache()
 
@@ -452,24 +509,23 @@ def main():
         with open(os.path.join(SAVE_PATH, "adapter_config.json"), "w", encoding="utf-8") as fh:
             json.dump(ablit_cfg, fh, indent=2)
         safetensors.torch.save_file(lora_state, os.path.join(SAVE_PATH, "adapter_model.safetensors"))
-        print(f"\n[DONE] Rank-1 abliteration delta adapter saved to {SAVE_PATH} "
-              f"({len(lora_state)} tensors).")
+        print(f"\n[DONE] Abliterated Cogito adapter saved to {SAVE_PATH} "
+              f"({len(lora_state)} tensors, r={r_new}). Drop-in replacement for the "
+              f"Cogito adapter: run.py --adapter {SAVE_PATH}")
 
-        # 5b. Optional smoke test: load the delta on top of the Cogito adapter.
+        # 5b. Optional smoke test: reload the combined adapter as a single adapter.
         if args.smoke_test:
-            print("\n[SMOKE TEST] Reloading model with Cogito + abliteration adapters ...")
+            print("\n[SMOKE TEST] Reloading the abliterated adapter ...")
             from unsloth import FastLanguageModel
 
             model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=adapter_path,
+                model_name=SAVE_PATH,
                 max_seq_length=1024,
                 dtype=None,
                 load_in_4bit=True,
                 device_map="auto",
                 token=hf_token or None,
             )
-            model.load_adapter(SAVE_PATH, adapter_name="ablit")
-            model.set_adapter(["default", "ablit"])
             model.eval()
             print("Generating one refusal probe and one persona probe ...")
             probes = [
@@ -495,19 +551,19 @@ def main():
                 print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
             print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
 
-        # 6b. Optional push (tiny ~5MB repo).
+        # 6b. Optional push (tiny adapter repo).
         if args.push_to_hub:
             from huggingface_hub import create_repo, upload_folder
 
-            print(f"Pushing delta adapter to https://huggingface.co/{args.push_repo} ...")
+            print(f"Pushing abliterated adapter to https://huggingface.co/{args.push_repo} ...")
             create_repo(args.push_repo, repo_type="model", token=hf_token, exist_ok=True)
             upload_folder(
                 repo_id=args.push_repo,
                 folder_path=SAVE_PATH,
                 token=hf_token,
-                commit_message="rank-1 abliteration delta adapter",
+                commit_message="abliterated Cogito adapter (base + Cogito + abliteration)",
             )
-            print(f"[DONE] Abliteration delta adapter live at https://huggingface.co/{args.push_repo}")
+            print(f"[DONE] Abliterated adapter live at https://huggingface.co/{args.push_repo}")
         return
 
     # =========================================================================

@@ -18,6 +18,10 @@
 #   python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 \
 #       --push-to-hub --push-repo ozaa77/Cogito-0.9-merged
 #
+#   # Merge the ABLITERATED adapter (base + Cogito + abliteration, emitted by
+#   # scripts/abliterate_cogito.py --adapter mode) into a full standalone model:
+#   python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9-abliterated --push-to-hub
+#
 #   # Save locally only (no upload):
 #   python scripts/merge_lora.py --adapter cogito_0.9_lora --output-dir cogito_0.9_merged
 #
@@ -184,14 +188,6 @@ def main():
         help="Override the base model (only if adapter_config.json's recorded base "
         "is a wiped local path; the adapter MUST have been trained on this exact base)",
     )
-    parser.add_argument(
-        "--ablit-adapter",
-        default=None,
-        help="Optional abliteration delta adapter (the rank-1 LoRA emitted by "
-        "scripts/abliterate_cogito.py --adapter mode). When set, it is merged "
-        "additively on top of the Cogito adapter, producing the FULL abliterated "
-        "model: base + Cogito + abliteration. Accepts a local dir or a Hub repo id.",
-    )
     parser.add_argument("--max-seq-length", type=int, default=1024)
     parser.add_argument("--token", default=None, help="HF token (default: HF_TOKEN env var)")
     args = parser.parse_args()
@@ -253,23 +249,6 @@ def main():
     else:
         print("[WARN] No 'lora_' modules found in the loaded model — "
               "the adapter may not have been applied.")
-
-    # Optional: apply the abliteration delta adapter on top of the Cogito
-    # adapter. Both adapters are then active, so the merge (save_pretrained_merged
-    # / push_to_hub_merged) produces the full abliterated model. This is the
-    # 'big machine' path of scripts/abliterate_cogito.py --adapter mode: same
-    # final weights, but materialized as a standalone full model here.
-    if args.ablit_adapter:
-        ablit_path = resolve_adapter(args.ablit_adapter, token)
-        print(f"\n[ABLIT] Applying abliteration delta adapter: {ablit_path}")
-        model.load_adapter(ablit_path, adapter_name="ablit")
-        model.set_adapter(["default", "ablit"])
-        print("[ABLIT] Both adapters active — merging base + Cogito + abliteration.")
-        print("[ABLIT] NOTE: this relies on peft summing the deltas of all ACTIVE adapters")
-        print("[ABLIT] during the merge. If the merged model still refuses, fall back to:")
-        print("[ABLIT]   model = model.merge_and_unload()")
-        print("[ABLIT]   model.save_pretrained(out); tokenizer.save_pretrained(out)")
-        print("[ABLIT] on a machine with enough VRAM (merge_and_unload dequantizes to fp16).")
 
     # Save locally unless the user said skip. On Kaggle the 20GB /kaggle/working
     # quota cannot hold a 28GB bf16 merge, so --push-to-hub --skip-local-save

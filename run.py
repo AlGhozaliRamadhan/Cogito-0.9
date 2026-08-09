@@ -58,14 +58,6 @@ parser.add_argument(
     "--no-abliteration", action="store_true",
     help="Skip abliteration step when using --train-overnight; train on plain Qwen base model for isolation testing"
 )
-parser.add_argument(
-    "--ablit-adapter", type=str, default=None,
-    help="Optional abliteration delta adapter (the rank-1 LoRA emitted by "
-    "scripts/abliterate_cogito.py --adapter mode). Loaded additively on top of "
-    "the Cogito adapter, so the active model is base(4bit) + Cogito + "
-    "abliteration. Accepts a local dir or a Hub repo id (e.g. "
-    "ozaa77/Cogito-0.9-abliterated)."
-)
 if __name__ != "__main__":
     args, _ = parser.parse_known_args([])
 else:
@@ -97,13 +89,8 @@ class C:
     DIM     = "\033[2m"
     BOLD    = "\033[1m"
     RESET   = "\033[0m"
-def load_model(adapter_path: str, ablit_adapter: str | None = None):
-    """Load Qwen2.5-Coder-14B base + LoRA adapter via Unsloth.
-
-    When ablit_adapter is given (the rank-1 delta emitted by
-    scripts/abliterate_cogito.py --adapter mode), it is loaded additively on top
-    of the Cogito adapter: base(4bit) + Cogito + abliteration.
-    """
+def load_model(adapter_path: str):
+    """Load Qwen2.5-Coder-14B base + LoRA adapter via Unsloth."""
     try:
         import torch
         if not torch.cuda.is_available():
@@ -125,32 +112,7 @@ def load_model(adapter_path: str, ablit_adapter: str | None = None):
         dtype=None,
         load_in_4bit=True,
     )
-    if ablit_adapter:
-        # Reuse merge_lora.resolve_adapter so Hub repo ids work here too.
-        scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        from merge_lora import resolve_adapter
-        try:
-            ablit_dir = resolve_adapter(ablit_adapter, os.environ.get("HF_TOKEN"))
-        except SystemExit as e:
-            print(f"\n{C.RED}[FATAL] Could not resolve abliteration adapter: {e}{C.RESET}")
-            sys.exit(1)
-        print(f"  Abliteration adapter: {ablit_dir}")
-        try:
-            model.load_adapter(ablit_dir, adapter_name="ablit")
-            model.set_adapter(["default", "ablit"])
-        except Exception as e:
-            print(f"\n{C.RED}[FATAL] Failed to apply abliteration adapter: {e}{C.RESET}")
-            print(f"        Check that {ablit_dir} is a valid rank-1 abliteration delta adapter.")
-            sys.exit(1)
-        print(f"  {C.GREEN}Abliteration delta applied (base + Cogito + abliteration).{C.RESET}")
     FastLanguageModel.for_inference(model)
-    if ablit_adapter:
-        # for_inference is a black box (eval + fast-path patches); re-assert the
-        # active adapter set so the abliteration delta is guaranteed to
-        # participate in generation.
-        model.set_adapter(["default", "ablit"])
     print(f"  {C.GREEN}Model loaded successfully.{C.RESET}\n")
     return model, tokenizer
 def extract_tag(text: str, tag: str) -> str | None:
@@ -452,7 +414,7 @@ def main():
         print("\n🎉 ALL DONE! Pipeline finished. See pipeline.log for details.")
         sys.exit(0)
 
-    model, tokenizer = load_model(args.adapter, args.ablit_adapter)
+    model, tokenizer = load_model(args.adapter)
     
     boot_context = generate_boot_context()
     conversation: list[dict] = [
