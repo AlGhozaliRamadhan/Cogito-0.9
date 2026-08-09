@@ -36,6 +36,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import argparse
 import json
+import re
 import sys
 
 import torch
@@ -149,15 +150,28 @@ def main():
         config = AutoConfig.from_pretrained(map_base, token=hf_token or None)
         with torch.device("meta"):
             meta_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
+        # Each Qwen2DecoderLayer must stay on ONE device — unsloth's patching
+        # refuses split layers ("All parameters of Qwen2DecoderLayer should be
+        # on the same device"). The class attribute is not always present on
+        # from_config models, so fall back to the Qwen2 class name explicitly.
+        no_split = getattr(meta_model, "_no_split_modules", None) or ["Qwen2DecoderLayer"]
         device_map = infer_auto_device_map(
             meta_model,
             max_memory={0: "13GiB", 1: "13GiB", "cpu": "30GiB"},
-            no_split_module_classes=getattr(meta_model, "_no_split_modules", None),
+            no_split_module_classes=no_split,
         )
         del meta_model
         torch.cuda.empty_cache()
         cpu_modules = sum(1 for d in device_map.values() if str(d) == "cpu")
         print(f"[GPU] Device map: {len(device_map)} modules total, {cpu_modules} overflowed to CPU RAM")
+        # Diagnose any decoder layer that still got split (unsloth would refuse).
+        split_layers = sorted({
+            k.split(".")[2]
+            for k in device_map
+            if re.match(r"^model\.layers\.\d+\.[a-z_]+", k)
+        })
+        if split_layers:
+            print(f"[GPU] WARNING: decoder layers split across devices: {split_layers}")
 
         print("Loading adapter + base in fp16 (28GB)...")
         try:
