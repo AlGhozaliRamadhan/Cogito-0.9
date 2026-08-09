@@ -113,15 +113,22 @@ def main():
         print(f"[ADAPTER] Using trained adapter: {adapter_path}")
         from unsloth import FastLanguageModel
 
-        print("Loading adapter + base in bf16 (fits across 2x T4 VRAM)...")
+        # Load the 4-bit base (~9GB download, fits Kaggle's disk) and dequantize
+        # to fp16 IN GPU MEMORY — avoids downloading 29GB of fp16 weights to
+        # disk. LoRA adapters stay attached through dequantize, so the trained
+        # model is abliterated as-is and streamed to the Hub shard-by-shard.
+        print("Loading adapter + base in 4-bit, then dequantizing to fp16 in VRAM...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=adapter_path,
             max_seq_length=1024,
-            dtype=torch.bfloat16,
-            load_in_4bit=False,
-            device_map="auto",  # 28GB bf16 must split across both T4s
+            dtype=None,
+            load_in_4bit=True,
+            device_map="auto",  # split across both T4s
             token=hf_token or None,
         )
+        torch.cuda.empty_cache()
+        model = model.dequantize()
+        torch.cuda.empty_cache()
         device_map = getattr(model, "hf_device_map", None)
         print(f"[GPU] Model device map: {device_map}")
         if device_map and all("cpu" in str(d).lower() for d in device_map.values()):
