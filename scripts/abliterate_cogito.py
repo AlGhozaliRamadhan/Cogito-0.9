@@ -93,9 +93,11 @@ def main():
     parser.add_argument(
         "--gpu-gb",
         type=float,
-        default=12.8,
-        help="Per-GPU VRAM budget in GiB for the device map (default: 12.8; lower "
-        "it, e.g. 12.0, if forward passes OOM during direction collection)",
+        default=11.0,
+        help="Per-GPU VRAM budget in GiB for the device map (default: 11.0). The "
+        "load itself uses ~1.8GB extra per GPU beyond the budget (unsloth/peft "
+        "overhead), so 11.0 leaves headroom on the 14.56GB T4s. Lower it further "
+        "(e.g. 10.0) if forward passes still OOM; raise it on bigger GPUs.",
     )
     parser.add_argument(
         "--merge-method",
@@ -203,6 +205,12 @@ def main():
         torch.cuda.empty_cache()
         cpu_modules = sum(1 for d in device_map.values() if str(d) == "cpu")
         print(f"[GPU] Device map: {len(device_map)} modules total, {cpu_modules} overflowed to CPU RAM")
+        try:
+            free0, _ = torch.cuda.mem_get_info(0)
+            free1, _ = torch.cuda.mem_get_info(1)
+            print(f"[GPU] Free VRAM before load: GPU0 {free0 / 1e9:.1f}GB, GPU1 {free1 / 1e9:.1f}GB")
+        except Exception:
+            pass
         # Diagnose any decoder layer that still got split (unsloth would refuse).
         split_layers = sorted({
             k.split(".")[2]
