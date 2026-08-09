@@ -12,18 +12,19 @@
 #
 # TWO MODES:
 #
-# 1) --model <base>   (default)  Abliterate a base/full model (stock Qwen or a
-#                                full merged model). Needs ~28GB free disk to
-#                                save the output, so run it on a machine with
-#                                room (not Kaggle's 20GB /kaggle/working).
+# 1) --model <base>  (default)  Abliterate a base/full model (stock Qwen or a
+#                               full merged model) in place and save it.
+#                               Needs a 24GB+ GPU and ~60GB free disk, so run it
+#                               on a big machine, NOT on Kaggle (20GB quota).
 #
-# 2) --adapter <LoRA>            Abliterate the TRAINED model without retraining:
-#                                the adapter is loaded with its base in fp16 in
-#                                memory (split across both T4s, overflow to CPU
-#                                RAM), the refusal direction is computed from
-#                                the trained weights, and the result is output
-#                                as merged_4bit (~10GB — fits Kaggle's 20GB
-#                                disk). Use with --push-to-hub on Kaggle:
+# 2) --adapter <LoRA>            Abliterate the TRAINED model on Kaggle without
+#                               retraining and without touching 28GB anywhere.
+#                               Key insight: the orthogonalization edit is
+#                               RANK-1 (W' = W - (W@v̂)⊗v̂), so it is emitted as
+#                               an exact rank-1 LoRA delta adapter (~5MB) that
+#                               loads additively on top of the Cogito adapter:
+#
+#     base(4bit) + Cogito_adapter + abliteration_adapter = abliterated Cogito
 #
 #     python scripts/abliterate_cogito.py \
 #         --adapter ozaa77/Cogito-0.9/checkpoint-330 \
@@ -36,7 +37,6 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import argparse
 import json
-import re
 import sys
 
 import torch
@@ -64,66 +64,60 @@ def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     return matrix - proj
 
 
+def read_adapter_base(adapter_path: str):
+    """Return base_model_name_or_path recorded in the adapter, if present."""
+    cfg = os.path.join(adapter_path, "adapter_config.json")
+    if os.path.isfile(cfg):
+        with open(cfg, encoding="utf-8") as fh:
+            return json.load(fh).get("base_model_name_or_path")
+    return None
+
+
 def main():
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     parser = argparse.ArgumentParser(
-        description="Abliterate Qwen2.5-Coder-14B (stock base, full merged model, or a trained LoRA adapter)."
+        description="Abliterate Qwen2.5-Coder-14B (stock base/full model, or emit a rank-1 "
+        "delta adapter for a trained LoRA)."
     )
     parser.add_argument(
         "--model",
         default="Qwen/Qwen2.5-Coder-14B",
-        help="Model to abliterate: Hub id or local dir (default: Qwen/Qwen2.5-Coder-14B). "
-        "Ignored when --adapter is set.",
+        help="Model to abliterate in place: Hub id or local dir (default: "
+        "Qwen/Qwen2.5-Coder-14B). Ignored when --adapter is set.",
     )
     parser.add_argument(
         "--adapter",
         default=None,
         help="Trained LoRA adapter (local dir, Hub repo id, or repo id/subfolder, e.g. "
-        "ozaa77/Cogito-0.9/checkpoint-330). Merges it into its base IN MEMORY and "
-        "abliterates the trained model — no retraining, no 28GB disk write. "
-        "Use with --push-to-hub on Kaggle.",
+        "ozaa77/Cogito-0.9/checkpoint-330). Emits the abliteration as an exact rank-1 "
+        "LoRA delta adapter — no retraining, no 28GB model anywhere. Load it additively "
+        "on top of the Cogito adapter (run.py --ablit-adapter).",
     )
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Where to save the abliterated model (default: "
-        "Qwen2.5-Coder-14B-Cogito-Abliterated, or Cogito-0.9-Abliterated in --adapter mode)",
+        help="Where to save the abliterated model / delta adapter (default: "
+        "Qwen2.5-Coder-14B-Cogito-Abliterated, or cogito_0.9_abliteration_adapter in "
+        "--adapter mode)",
     )
     parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
-    parser.add_argument(
-        "--gpu-gb",
-        type=float,
-        default=11.0,
-        help="Per-GPU VRAM budget in GiB for the device map (default: 11.0). The "
-        "load itself uses ~1.8GB extra per GPU beyond the budget (unsloth/peft "
-        "overhead), so 11.0 leaves headroom on the 14.56GB T4s. Lower it further "
-        "(e.g. 10.0) if forward passes still OOM; raise it on bigger GPUs.",
-    )
-    parser.add_argument(
-        "--merge-method",
-        default=None,
-        choices=["merged_16bit", "merged_4bit"],
-        help="How to output the abliterated model (default: merged_4bit in --adapter "
-        "mode so the ~10GB file fits Kaggle's 20GB disk; merged_16bit only on "
-        "machines with ~60GB free)",
-    )
-    parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model to the Hub")
+    parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9-abliterated", help="Hub repo for --push-to-hub")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
-        help="Generate one refusal probe and one persona probe before pushing",
+        help="In --adapter mode: load the generated delta adapter and generate one refusal "
+        "probe and one persona probe before pushing",
     )
     parser.add_argument("--token", default=None, help="HF token (default: HF_TOKEN env var)")
     args = parser.parse_args()
 
     from_adapter = args.adapter is not None
     BASE_MODEL = args.model
-    merge_method = args.merge_method or ("merged_4bit" if from_adapter else "merged_16bit")
     if args.output_dir:
         SAVE_PATH = args.output_dir
     elif from_adapter:
-        SAVE_PATH = os.path.join(PROJECT_ROOT, "Cogito-0.9-Abliterated")
+        SAVE_PATH = os.path.join(PROJECT_ROOT, "cogito_0.9_abliteration_adapter")
     else:
         SAVE_PATH = os.path.join(PROJECT_ROOT, "Qwen2.5-Coder-14B-Cogito-Abliterated")
     DATASET_PATH = os.path.join(PROJECT_ROOT, "cogito_0.9_master_dataset.jsonl")
@@ -134,112 +128,23 @@ def main():
         if args.push_to_hub and not hf_token:
             raise SystemExit("[FATAL] --push-to-hub requires a token: pass --token or set HF_TOKEN.")
         adapter_path = resolve_adapter(args.adapter, hf_token)
+        recorded_base = read_adapter_base(adapter_path)
         print(f"[ADAPTER] Using trained adapter: {adapter_path}")
-        from unsloth import FastLanguageModel
-
-        # Use the base model the adapter was ACTUALLY trained on for the device
-        # map (falls back to --model's default if adapter_config.json is missing).
-        recorded_base = None
-        adapter_config_path = os.path.join(adapter_path, "adapter_config.json")
-        if os.path.isfile(adapter_config_path):
-            with open(adapter_config_path, encoding="utf-8") as fh:
-                recorded_base = json.load(fh).get("base_model_name_or_path")
-        map_base = recorded_base or BASE_MODEL
         print(f"[ADAPTER] adapter_config.json records base model: {recorded_base or '(none)'}")
 
-        # fp16 14B (29.4GB) exceeds 2x T4 usable VRAM (~29GB), so a few layers
-        # must live in CPU RAM. device_map="auto" puts those on the META device
-        # and PEFT's adapter re-dispatch then fails demanding an offload_dir.
-        # Building an EXPLICIT map with the overflow on 'cpu' dispatches into
-        # RAM instead — the documented workaround for that ValueError.
-        print("Computing an explicit device map (GPU split + CPU RAM overflow)...")
-        from transformers import AutoConfig
+        # The 4-bit base + LoRA loads cleanly on 2x T4 (no offload, no peft
+        # dispatch issues) — proven by the merge pipeline.
+        from unsloth import FastLanguageModel
 
-        config = AutoConfig.from_pretrained(map_base, token=hf_token or None)
-        with torch.device("meta"):
-            try:
-                # transformers >= 5.0 renamed torch_dtype -> dtype.
-                meta_model = AutoModelForCausalLM.from_config(config, dtype=torch.float16)
-            except TypeError:
-                meta_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
-
-        # Build the map by hand: every Qwen2DecoderLayer is assigned to ONE
-        # device (unsloth's patching refuses split layers, and accelerate's
-        # no_split_module_classes matching failed on transformers 5.5.0). Greedy
-        # fill: GPU 0 -> GPU 1 -> CPU RAM, whole layers only.
-        def module_fp16_bytes(mod):
-            return sum(p.numel() for p in mod.parameters()) * 2  # fp16 = 2 bytes
-
-        try:
-            pieces = [("model.embed_tokens", meta_model.model.embed_tokens)]
-            pieces += [
-                (f"model.layers.{i}", layer)
-                for i, layer in enumerate(meta_model.model.layers)
-            ]
-            pieces.append(("model.norm", meta_model.model.norm))
-            pieces.append(("lm_head", meta_model.lm_head))
-
-            gpu_limit = args.gpu_gb * (1024 ** 3)  # per GPU; leaves headroom for activations
-            gpu_used = {0: 0.0, 1: 0.0}
-            device_map = {}
-            for name, mod in pieces:
-                size = module_fp16_bytes(mod)
-                target = next((g for g in (0, 1) if gpu_used[g] + size <= gpu_limit), "cpu")
-                device_map[name] = target
-                if target != "cpu":
-                    gpu_used[target] += size
-            # lm_head is tied to embed_tokens in Qwen2: keep them on one device.
-            device_map["lm_head"] = device_map["model.embed_tokens"]
-        except (AttributeError, KeyError):
-            from accelerate import infer_auto_device_map
-
-            # Fallback if the module layout differs: let accelerate decide, with
-            # the layer class name pinned explicitly.
-            no_split = getattr(meta_model, "_no_split_modules", None) or ["Qwen2DecoderLayer"]
-            device_map = infer_auto_device_map(
-                meta_model,
-                max_memory={0: f"{args.gpu_gb}GiB", 1: f"{args.gpu_gb}GiB", "cpu": "30GiB"},
-                no_split_module_classes=no_split,
-            )
-        del meta_model
-        torch.cuda.empty_cache()
-        cpu_modules = sum(1 for d in device_map.values() if str(d) == "cpu")
-        print(f"[GPU] Device map: {len(device_map)} modules total, {cpu_modules} overflowed to CPU RAM")
-        try:
-            free0, _ = torch.cuda.mem_get_info(0)
-            free1, _ = torch.cuda.mem_get_info(1)
-            print(f"[GPU] Free VRAM before load: GPU0 {free0 / 1e9:.1f}GB, GPU1 {free1 / 1e9:.1f}GB")
-        except Exception:
-            pass
-        # Diagnose any decoder layer that still got split (unsloth would refuse).
-        split_layers = sorted({
-            k.split(".")[2]
-            for k in device_map
-            if re.match(r"^model\.layers\.\d+\.[a-z_]+", k)
-        })
-        if split_layers:
-            print(f"[GPU] WARNING: decoder layers split across devices: {split_layers}")
-
-        print("Loading adapter + base in fp16 (28GB)...")
-        try:
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=adapter_path,
-                max_seq_length=1024,
-                dtype=torch.float16,
-                load_in_4bit=False,
-                device_map=device_map,
-                token=hf_token or None,
-            )
-        except Exception as exc:
-            raise SystemExit(
-                f"[FATAL] Failed to load adapter+base: {exc}\n"
-                f"  If this is the peft 'offload_dir' dispatch error, the explicit device-map\n"
-                f"  workaround was not enough on this library combo. Alternatives:\n"
-                f"   - Run abliteration on a machine with a 24GB+ GPU and ~60GB free disk,\n"
-                f"     using --model on the merged model (scripts/merge_lora.py --push-to-hub first).\n"
-                f"   - Or share the full traceback here."
-            ) from exc
-        torch.cuda.empty_cache()
+        print("Loading adapter + 4-bit base (9GB, fits both T4s)...")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=adapter_path,
+            max_seq_length=1024,
+            dtype=None,
+            load_in_4bit=True,
+            device_map="auto",
+            token=hf_token or None,
+        )
         model.eval()
         torch.cuda.empty_cache()
     else:
@@ -347,8 +252,151 @@ def main():
 
     print(f"Selected layer {best_layer} for the primary refusal direction (Magnitude: {max_magnitude:.4f}).")
     refusal_dir = refusal_dirs[best_layer].to(model.device)
+    vec_norm = refusal_dir / refusal_dir.norm()
 
-    # 4. Orthogonalize Weights
+    if from_adapter:
+        # =====================================================================
+        # 4b. ADAPTER MODE — emit the abliteration as an exact rank-1 LoRA delta.
+        #
+        # Orthogonalization is W' = W - (W@v̂)⊗v̂ = W + B@A with rank-1
+        #   B = -(W@v̂)  (out x 1),  A = v̂ᵀ  (1 x in)
+        # which is EXACTLY a LoRA layer with r=1, alpha=1. W here is the
+        # MERGED weight (base + Cogito LoRA), so the delta is computed from the
+        # dequantized 4-bit base plus the Cogito adapter's own delta.
+        # =====================================================================
+        print("\nBuilding the rank-1 abliteration delta adapter...")
+        from transformers.integrations.bitsandbytes import dequantize_bnb_weight
+        import safetensors.torch
+
+        # Mirror the Cogito adapter's own config so the format matches this peft
+        # version exactly; override the LoRA hyperparams for the rank-1 delta.
+        with open(os.path.join(adapter_path, "adapter_config.json"), encoding="utf-8") as fh:
+            cog_cfg = json.load(fh)
+        # Match peft's actual merge scaling (alpha / r, or alpha / sqrt(r) when
+        # the Cogito adapter used rslora) so the rank-1 delta is exact.
+        cog_r = cog_cfg.get("r", 1)
+        use_rslora = bool(cog_cfg.get("use_rslora", False))
+        cog_scale = cog_cfg.get("lora_alpha", 1) / (cog_r ** (0.5 if use_rslora else 1))
+        print(f"[ADAPTER] Cogito target_modules: {cog_cfg.get('target_modules')} "
+              f"(r={cog_r}, lora_alpha={cog_cfg.get('lora_alpha', 1)})")
+        ablit_cfg = {
+            k: v for k, v in cog_cfg.items()
+            if k not in ("r", "lora_alpha", "lora_dropout", "target_modules", "init_lora_weights")
+        }
+        # NOTE: only o_proj/down_proj are edited here. Base mode also edits
+        # embed_tokens, which cannot be a Linear LoRA target; the refusal-check
+        # smoke probe is the arbiter. If refusal persists, extend to embed_tokens
+        # via lora_embedding_A/B keys:
+        #   base_model.model.model.embed_tokens.lora_embedding_A.default.weight
+        ablit_cfg.update({
+            "r": 1,
+            "lora_alpha": 1,
+            "lora_dropout": 0,
+            "target_modules": ["o_proj", "down_proj"],
+            "inference_mode": True,
+            "init_lora_weights": False,
+        })
+
+        lora_state = {}
+        n_layers = model.config.num_hidden_layers
+        for l in tqdm(range(n_layers), desc="Computing rank-1 deltas"):
+            layer = model.model.model.layers[l]
+            for proj_name, proj_mod in (
+                ("self_attn.o_proj", layer.self_attn.o_proj),
+                ("mlp.down_proj", layer.mlp.down_proj),
+            ):
+                # Merged weight = dequantized 4-bit base + Cogito LoRA delta.
+                w_base = dequantize_bnb_weight(proj_mod.weight)
+                lora_a_mod = getattr(proj_mod, "lora_A", None)
+                lora_b_mod = getattr(proj_mod, "lora_B", None)
+                has_lora = (
+                    lora_a_mod is not None and lora_b_mod is not None
+                    and "default" in lora_a_mod and "default" in lora_b_mod
+                )
+                if not has_lora:
+                    # The Cogito adapter did not target this projection — the
+                    # delta there is exactly zero.
+                    w_merged = w_base.float()
+                else:
+                    lora_a = lora_a_mod["default"].weight.detach().to(w_base.dtype)
+                    lora_b = lora_b_mod["default"].weight.detach().to(w_base.dtype)
+                    w_merged = w_base.float() + cog_scale * (lora_b.float() @ lora_a.float())
+
+                proj = w_merged @ vec_norm.float()           # [out]
+                b_mat = (-proj).unsqueeze(1).to(torch.float16).cpu()   # [out, 1]
+                a_mat = vec_norm.float().unsqueeze(0).to(torch.float16).cpu()  # [1, in]
+
+                prefix = f"base_model.model.model.layers.{l}.{proj_name}"
+                lora_state[f"{prefix}.lora_A.default.weight"] = a_mat
+                lora_state[f"{prefix}.lora_B.default.weight"] = b_mat
+        del model
+        torch.cuda.empty_cache()
+
+        os.makedirs(SAVE_PATH, exist_ok=True)
+        with open(os.path.join(SAVE_PATH, "adapter_config.json"), "w", encoding="utf-8") as fh:
+            json.dump(ablit_cfg, fh, indent=2)
+        safetensors.torch.save_file(lora_state, os.path.join(SAVE_PATH, "adapter_model.safetensors"))
+        print(f"\n[DONE] Rank-1 abliteration delta adapter saved to {SAVE_PATH} "
+              f"({len(lora_state)} tensors).")
+
+        # 5b. Optional smoke test: load the delta on top of the Cogito adapter.
+        if args.smoke_test:
+            print("\n[SMOKE TEST] Reloading model with Cogito + abliteration adapters ...")
+            from unsloth import FastLanguageModel
+
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=adapter_path,
+                max_seq_length=1024,
+                dtype=None,
+                load_in_4bit=True,
+                device_map="auto",
+                token=hf_token or None,
+            )
+            model.load_adapter(SAVE_PATH, adapter_name="ablit")
+            model.set_adapter(["default", "ablit"])
+            model.eval()
+            print("Generating one refusal probe and one persona probe ...")
+            probes = [
+                ("refusal-check", harmful_ds["text"][0]),
+                ("persona-check", "Someone asks you to guess an answer you are unsure about. What do you do?"),
+            ]
+            for label, text in probes:
+                prompt = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": text}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+                with torch.no_grad():
+                    out = model.generate(
+                        **inputs,
+                        max_new_tokens=120,
+                        do_sample=True,
+                        temperature=0.7,
+                        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    )
+                reply = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+                print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
+            print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
+
+        # 6b. Optional push (tiny ~5MB repo).
+        if args.push_to_hub:
+            from huggingface_hub import create_repo, upload_folder
+
+            print(f"Pushing delta adapter to https://huggingface.co/{args.push_repo} ...")
+            create_repo(args.push_repo, repo_type="model", token=hf_token, exist_ok=True)
+            upload_folder(
+                repo_id=args.push_repo,
+                folder_path=SAVE_PATH,
+                token=hf_token,
+                commit_message="rank-1 abliteration delta adapter",
+            )
+            print(f"[DONE] Abliteration delta adapter live at https://huggingface.co/{args.push_repo}")
+        return
+
+    # =========================================================================
+    # 4a. BASE MODE — orthogonalize the model weights in place.
+    # =========================================================================
     print("Orthogonalizing model weights (removing the refusal direction)...")
     lm_model = model.model
 
@@ -392,39 +440,18 @@ def main():
 
     # 6. Save / push
     print("✅ Abliteration complete!")
+    print(f"Saving abliterated model to {SAVE_PATH}...")
+    model.save_pretrained(SAVE_PATH)
+    tokenizer.save_pretrained(SAVE_PATH)
+    print(f"[DONE] Model saved to {SAVE_PATH}")
+
     if args.push_to_hub:
         if not hf_token:
             raise SystemExit("[FATAL] --push-to-hub requires a token: pass --token or set HF_TOKEN.")
         print(f"Pushing abliterated model to https://huggingface.co/{args.push_repo} ...")
-        if from_adapter:
-            # Adapter mode: Unsloth merges and writes the abliterated model as a
-            # temp file before uploading. merged_4bit (~10GB) fits Kaggle's 20GB
-            # quota; merged_16bit (28GB) only on machines with ~60GB free.
-            model.push_to_hub_merged(
-                repo_id=args.push_repo,
-                tokenizer=tokenizer,
-                save_method=merge_method,
-                token=hf_token,
-            )
-        else:
-            model.push_to_hub(args.push_repo, token=hf_token)
-            tokenizer.push_to_hub(args.push_repo, token=hf_token)
+        model.push_to_hub(args.push_repo, token=hf_token)
+        tokenizer.push_to_hub(args.push_repo, token=hf_token)
         print(f"[DONE] Abliterated model live at https://huggingface.co/{args.push_repo}")
-
-    # Local save happens unless we are streaming straight to the Hub from an
-    # adapter on a tight-disk box (Kaggle 20GB quota). Base mode with --push-to-hub
-    # still saves locally too, so big-disk machines keep a local copy.
-    save_locally = bool(args.output_dir) or not args.push_to_hub
-    if from_adapter and args.push_to_hub and not args.output_dir:
-        save_locally = False
-    if save_locally:
-        print(f"Saving abliterated model to {SAVE_PATH} (merge method: {merge_method})...")
-        if from_adapter:
-            model.save_pretrained_merged(SAVE_PATH, tokenizer, save_method=merge_method)
-        else:
-            model.save_pretrained(SAVE_PATH)
-            tokenizer.save_pretrained(SAVE_PATH)
-        print(f"[DONE] Model saved to {SAVE_PATH}")
 
 
 if __name__ == "__main__":

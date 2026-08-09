@@ -26,8 +26,12 @@ git clone https://github.com/AlGhozaliRamadhan/Cogito-0.9.git
 cd Cogito-0.9
 pip install -r requirements.txt
 python run.py --adapter ./cogito_0.9_lora
+# optional: apply the abliteration delta adapter on top (base + Cogito + abliteration):
+python run.py --adapter ./cogito_0.9_lora --ablit-adapter ./cogito_0.9_abliteration_adapter
 ```
 *(Note: Requires the Qwen2.5-Coder-14B base model and the Cogito LoRA adapter generated from training.)*
+
+`--ablit-adapter` also accepts a Hub repo id, e.g. `--ablit-adapter ozaa77/Cogito-0.9-abliterated` (requires `HF_TOKEN` if private).
 
 ---
 
@@ -128,20 +132,35 @@ python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 --output
 
 ### Abliterate the Trained Model (No Retraining)
 
-Abliteration is a weight edit, so it can be applied to the FINAL trained weights — no retraining. On Kaggle (20GB `/kaggle/working` quota) use `--adapter` mode: the adapter loads with its base in fp16 across GPU + CPU RAM, gets abliterated, and is output as a **merged 4-bit model (~10GB)** — the only size that fits Kaggle's disk. Pass `--merge-method merged_16bit` only on machines with ~60GB free disk.
+Abliteration is a weight edit (`W' = W − (W·v̂)⊗v̂`), so it can be applied to the FINAL trained weights — no retraining. The key insight: that edit is **rank-1**, so instead of ever materializing a 28GB model (impossible on Kaggle's 20GB `/kaggle/working` quota), the script emits the edit as a tiny **rank-1 LoRA delta adapter (~5MB)** that loads additively on top of the Cogito adapter:
+
+```
+base(4bit) + Cogito_adapter + abliteration_adapter = abliterated Cogito
+```
+
+The refusal direction is computed from the *trained* model (4-bit base + Cogito LoRA, which loads cleanly on 2x T4), using Cogito's own training data as the harmless baseline — so its freewill ("refuse to guess") is preserved while generic safety refusals are removed.
 
 ```bash
-# One command on Kaggle 2x T4 — merge + abliterate + smoke-test + push:
+# One command on Kaggle 2x T4 — compute + smoke-test + push the delta adapter:
 python scripts/abliterate_cogito.py --adapter ozaa77/Cogito-0.9/checkpoint-330 \
     --smoke-test --push-to-hub
 ```
-`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model.
+`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The delta adapter lands in `cogito_0.9_abliteration_adapter/` (and optionally `ozaa77/Cogito-0.9-abliterated` on the Hub).
 
-On a machine with ~60GB free disk and a 24GB+ GPU, `--model` mode works the same on a full merged model (e.g. `--model cogito_0.9_merged`).
+Then run Cogito with the delta applied on top of the Cogito adapter:
 
-To also publish the plain (non-abliterated) merged model, run `scripts/merge_lora.py` first. On Kaggle use `--push-to-hub --skip-local-save` (the 28GB bf16 merge cannot fit in the 20GB working dir); on a big-disk machine just `python scripts/merge_lora.py` saves it locally too.
+```bash
+python run.py --adapter ./cogito_0.9_lora --ablit-adapter ./cogito_0.9_abliteration_adapter
+```
 
-`--model` also still accepts the stock base (`Qwen/Qwen2.5-Coder-14B`, the default) if you want to abliterate before training instead.
+On a machine with ~60GB free disk and a 24GB+ GPU you can instead merge everything into one standalone full model (base + Cogito + abliteration) with `scripts/merge_lora.py`'s new `--ablit-adapter` flag:
+
+```bash
+python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 \
+    --ablit-adapter ozaa77/Cogito-0.9-abliterated --push-to-hub
+```
+
+`--model` mode (the default) still abliterates the stock base (`Qwen/Qwen2.5-Coder-14B`) **in place** before training — that path needs a 24GB+ GPU and ~60GB free disk and is intended for machines, not Kaggle. To also publish the plain (non-abliterated) merged model, run `scripts/merge_lora.py` with `--push-to-hub --skip-local-save` on Kaggle (the 28GB bf16 merge cannot fit the 20GB working dir).
 
 Keep the Hub repo lean (each checkpoint is ~425MB) and optionally make it public:
 
