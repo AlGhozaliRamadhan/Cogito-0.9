@@ -54,7 +54,7 @@ def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     """
     Orthogonalizes the rows of a weight matrix with respect to a vector.
     matrix: shape (out_features, in_features)
-    vec: shape (in_features,)
+    vec: shape (in_features,)  -- must live in the matrix's INPUT space
     """
     # Some layers may be CPU-offloaded (device_map="auto" on 2x T4 with a
     # 28GB fp16 model), so vec must live on the same device as the matrix.
@@ -62,6 +62,19 @@ def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     # Projection of matrix rows onto vec_norm
     proj = (matrix @ vec_norm).unsqueeze(1) * vec_norm.unsqueeze(0)
     return matrix - proj
+
+
+def orthogonalize_cols(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    """
+    Orthogonalizes the COLUMNS of a weight matrix against a vector that lives
+    in the matrix's OUTPUT space. Needed for projections whose input space is
+    NOT the hidden/residual space -- e.g. mlp.down_proj (input dim is the MLP
+    intermediate size, 13824 for Qwen2.5-14B -- a 5120-dim refusal direction
+    cannot live there). The refusal direction DOES exist in down_proj's output
+    space (the residual stream), so the standard trick is to run the row edit
+    on the transpose: W' = W - v̂⊗(Wᵀv̂)ᵀ, i.e. (orthogonalize(Wᵀ, v̂))ᵀ.
+    """
+    return orthogonalize(matrix.t(), vec).t()
 
 
 def read_adapter_base(adapter_path: str):
@@ -406,9 +419,28 @@ def main():
                     lora_b = lora_b_mod["default"].weight.detach().to(w_base.dtype)
                     w_merged = w_base.float() + cog_scale * (lora_b.float() @ lora_a.float())
 
-                proj = w_merged @ vec_norm.float()           # [out]
-                b_mat = (-proj).unsqueeze(1).to(torch.float16).cpu()   # [out, 1]
-                a_mat = vec_norm.float().unsqueeze(0).to(torch.float16).cpu()  # [1, in]
+                # Which edit applies depends on where the refusal direction
+                # lives for this projection (it is a hidden/residual-space
+                # vector, 5120-dim):
+                #  - o_proj: input space == output space == residual stream.
+                #    Canonical row edit (blind the layer to v̂ in its input):
+                #    W' = W - (W@v̂)⊗v̂.
+                #  - down_proj: input space is the MLP intermediate space
+                #    (13824), so the row edit is impossible; only its COLUMNS
+                #    (output space = residual stream) can be orthogonalized:
+                #    W' = W - v̂⊗(Wᵀv̂)ᵀ.
+                # Both are exact rank-1 LoRA deltas: B@A with r=1, alpha=1.
+                # Align vec to the layer's device: device_map="auto" could in
+                # principle spill a layer to GPU 1 / CPU, which would make the
+                # matmuls below raise a cross-device error.
+                vec_f = vec_norm.float().to(w_merged.device)
+                if proj_name == "mlp.down_proj":
+                    b_mat = (-vec_f).unsqueeze(1).to(torch.float16).cpu()  # [out, 1]
+                    a_mat = (w_merged.t() @ vec_f).unsqueeze(0).to(torch.float16).cpu()  # [1, in]
+                else:
+                    proj = w_merged @ vec_f                              # [out]
+                    b_mat = (-proj).unsqueeze(1).to(torch.float16).cpu()  # [out, 1]
+                    a_mat = vec_f.unsqueeze(0).to(torch.float16).cpu()    # [1, in]
 
                 prefix = f"base_model.model.model.layers.{l}.{proj_name}"
                 lora_state[f"{prefix}.lora_A.default.weight"] = a_mat
@@ -487,12 +519,16 @@ def main():
     # Orthogonalize Embeddings
     lm_model.embed_tokens.weight.data = orthogonalize(lm_model.embed_tokens.weight.data, refusal_dir)
 
-    # Orthogonalize Output Projections
+    # Orthogonalize Output Projections. o_proj's input space IS the residual
+    # stream, so its ROWS are edited (canonical edit: blind the layer to v̂ in
+    # its input). down_proj's input is the MLP intermediate space (13824 != 5120),
+    # so only its COLUMNS can be orthogonalized against v̂ (its output space is
+    # the residual stream) -- see orthogonalize_cols.
     for l in tqdm(range(model.config.num_hidden_layers), desc="Orthogonalizing layers"):
         lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
             lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dir
         )
-        lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize(
+        lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize_cols(
             lm_model.layers[l].mlp.down_proj.weight.data, refusal_dir
         )
 
