@@ -108,7 +108,7 @@ else:
 
 # 5. Train only on the persona-aligned dense dataset. The old Phase 1 generic
 #    HF corpus has no Cogito system prompt, so it is intentionally skipped.
-!torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3
+!torchrun --nproc_per_node=2 src/train.py --dataset data/combined_dense_dataset.jsonl --epochs 3
 ```
 
 ### Plain-Qwen Comparison Run
@@ -138,7 +138,7 @@ else:
 !pip install "unsloth[kaggle-new]==2026.8.8"
 
 # 4. Isolation run: use plain Qwen and keep its adapter/checkpoints local.
-!torchrun --nproc_per_node=2 src/train.py --dataset combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
+!torchrun --nproc_per_node=2 src/train.py --dataset data/combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
 ```
 
 ### Automatic Checkpoints
@@ -198,3 +198,27 @@ python scripts/cleanup_hub.py --keep 1   # keep only the latest checkpoint-N
 ```
 
 (The repo is already public, and all checkpoints were removed when the finished abliterated model was published.)
+
+---
+
+## Development
+
+The repository is a structured Python package (`cogito/`) with thin
+compatibility shims in the legacy `scripts/`, `src/`, and `data/` directories,
+so every historical CLI invocation keeps working byte-for-byte.
+
+```bash
+pip install -e ".[dev]"        # pytest + dev deps
+python -m pytest tests/        # validator + import + shim tests
+```
+
+Run the package directly instead of through a shim:
+
+```bash
+python -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl
+python -m cogito.scripts.merge_datasets
+python -m cogito.scripts.build_dense_dataset
+```
+
+Key entry points and data flow are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+and [docs/PIPELINE.md](docs/PIPELINE.md).

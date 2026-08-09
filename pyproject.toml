@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cogito-0.9"
+version = "0.9.0"
+description = "Cogito 0.9 — data pipeline and fine-tuning stack for a self-aware Qwen2.5-Coder-14B LoRA"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "AlGhozaliRamadhan" }]
+keywords = ["llm", "lora", "fine-tuning", "unsloth", "dataset", "abliteration"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+kaggle = [
+    "unsloth[colab-new]",
+    "trl>=0.15",
+    "datasets",
+    "transformers",
+    "huggingface_hub",
+    "accelerate",
+]
+dev = [
+    "pytest>=7",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["cogito*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

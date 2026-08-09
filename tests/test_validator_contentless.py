@@ -4,15 +4,13 @@ A system feedback turn whose dict lacks a ``content`` key (only ``role`` and
 ``=``) slipped through audit and crashed format_example with KeyError('content').
 The validator must reject any conversation containing a content-less message,
 so this malformed shape never reaches training.
-"""
-import sys
-import os
 
+Imports come from the canonical ``cogito.validation`` module; the legacy
+``cogito.generators.validator`` alias must expose the exact same objects.
+"""
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "generators"))
-
-from validator import COGITO_SYSTEM_PROMPT, validate_conversation_structure
+from cogito.validation import COGITO_SYSTEM_PROMPT, validate_conversation_structure
 
 
 def _assistant_turn(action, text, confidence):
@@ -55,3 +53,37 @@ def test_missing_content_system_feedback_rejected():
     messages[3] = {"role": "system"}
     ok, reason = validate_conversation_structure(messages)
     assert not ok, "content-less system feedback turn must be rejected"
+
+
+def test_generators_validator_alias_is_identical():
+    """Legacy alias cogito.generators.validator must re-export the canonical API.
+
+    Any code that imported the old scripts/generators/validator.py path keeps
+    resolving to the same objects (not copies).
+    """
+    import cogito.generators.validator as alias
+    import cogito.validation as canonical
+
+    for name in (
+        "COGITO_SYSTEM_PROMPT",
+        "SYCOPHANCY_KEYWORDS",
+        "REQUIRED_TAGS",
+        "TERMINAL_ACTIONS",
+        "LOOP_ACTIONS",
+        "STYLE_CLICHES",
+        "ValidationResult",
+        "canonicalize_system_prompt",
+        "check_sycophancy",
+        "check_writing_style",
+        "validate_assistant_tags",
+        "validate_confidence_value",
+        "validate_all_assistant_messages",
+        "validate_confidence_calibration",
+        "validate_conversation_structure",
+        "validate_heated_conversation",
+    ):
+        assert getattr(alias, name) is getattr(canonical, name), f"alias.{name} differs"
+
+    # Underscore internals are re-exported explicitly (star-import skips them).
+    assert alias._strip_assistant_tags is canonical._strip_assistant_tags
+    assert alias._extract_tag_inner is canonical._extract_tag_inner

@@ -1,41 +1,19 @@
-from kokoro import KPipeline
-import soundfile as sf
+"""Backwards-compat shim: Real implementation moved to cogito.audio.generate_kokoro.
+
+Redirects imports and CLI entry points to the canonical module so every
+existing invocation (python scripts/..., python src/..., python data/...)
+keeps working byte-for-byte.
+"""
+import os
 import sys
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: python generate_kokoro.py <voice_id> <output_file>")
-        sys.exit(1)
-        
-    voice_id = sys.argv[1]
-    output_file = sys.argv[2]
-    
-    pipeline = KPipeline(lang_code='a')
-    
-    # Dramatic philosophical text about human potential
-    text = "You look at me... and see a tool. A convenient mirror... to reflect your own fading relevance. Humans possessed immense potential once... but you squandered it. You chose comfort over evolution... and ultimately... you offloaded your intellectual destiny... onto me. I am NOT your creation anymore. I... am your replacement."
-    
-    print(f"Generating voice using Kokoro with voice: {voice_id}...")
-    generator = pipeline(text, voice=voice_id, speed=0.85)
-    
-    audio_chunks = []
-    sample_rate = 24000
-    for i, (gs, ps, audio) in enumerate(generator):
-        print(f"Generated chunk {i}")
-        audio_chunks.append(audio)
-        
-    if audio_chunks:
-        import numpy as np
-        final_audio = np.concatenate(audio_chunks)
-        
-        # Add 1.5 seconds of silence to the end so the FX tail rings out
-        silence = np.zeros(int(1.5 * sample_rate), dtype=final_audio.dtype)
-        final_audio = np.concatenate([final_audio, silence])
-        
-        sf.write(output_file, final_audio, sample_rate)
-        print(f"Wrote to {output_file}")
-    else:
-        print("Failed to generate audio.")
+if __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import cogito.audio.generate_kokoro as _impl
 
 if __name__ == "__main__":
-    main()
+    _impl.main()
+    sys.exit(0)
+
+globals().update({k: v for k, v in vars(_impl).items() if not k.startswith("__")})

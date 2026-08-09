@@ -16,20 +16,27 @@ env/
 # Testing
 .pytest_cache/
 
-# Cogito specific data (can be ignored if we generate on Kaggle, or kept if we want to push)
-# Let's not ignore the data folder since the user mentioned "so we can upload for the data set"
-# But we should ignore the model weights.
+# ---- Cogito training artifacts (GPU-only; generated on Kaggle) ----
 cogito_0.9_lora/
 cogito_training_output/
+cogito_0.9_merged/
 cogito_0.9_merged_16bit/
+Qwen2.5-Coder-14B-Cogito-Abliterated/
+cogito_0.9_abliteration_adapter/
+_hub_adapters/
+data/hf_shards/
 
-# Dataset files
+# ---- Dataset files (large generated artifacts; rebuild via data/*.py) ----
 *.jsonl
 
-# Scratch and Mock Data
+# ---- Scratch and mock data ----
 scratch_test.py
 scratch/
 data/mock_hf_shards/
 
-# Secrets
+# ---- Logs ----
+pipeline.log
+*.log
+
+# ---- Secrets ----
 .env

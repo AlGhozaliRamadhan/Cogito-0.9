@@ -1,10 +1,15 @@
+"""Shared OpenAI-compatible API client with runtime model fallback.
+
+All generators import from here instead of duplicating setup.
+
+Import safety: importing this module NEVER requires an API key and never
+touches the network. Missing credentials surface as ``CogitoAPIKeyError``
+at call time (``get_client`` / ``get_working_model``), so any module can
+import the generators on a machine without NVIDIA_API_KEY configured.
+"""
 import os
-import sys
 import time
 from openai import OpenAI
-
-# --- Shared API client with runtime model fallback ---
-# All generators import from here instead of duplicating setup.
 
 _client = None
 _current_model = None
@@ -25,6 +30,10 @@ MODELS = [
 ]
 
 
+class CogitoAPIKeyError(RuntimeError):
+    """Raised when an API call is attempted without NVIDIA_API_KEY configured."""
+
+
 def _get_api_key():
     try:
         from kaggle_secrets import UserSecretsClient
@@ -33,16 +42,23 @@ def _get_api_key():
         return os.environ.get("NVIDIA_API_KEY")
 
 
+def _require_api_key() -> str:
+    """Return the API key or raise CogitoAPIKeyError (call-time, not import-time)."""
+    api_key = _get_api_key()
+    if not api_key:
+        raise CogitoAPIKeyError(
+            "NVIDIA_API_KEY not found in Kaggle Secrets or environment."
+        )
+    return api_key
+
+
 def get_working_model():
-    """Try models in order until one responds. Called once at startup."""
+    """Try models in order until one responds. Called lazily at first use."""
     global _current_model
     if _current_model is not None:
         return _current_model
 
-    api_key = _get_api_key()
-    if not api_key:
-        print("[FATAL] NVIDIA_API_KEY not found in Kaggle Secrets or environment.")
-        sys.exit(1)
+    api_key = _require_api_key()
 
     for model in MODELS:
         if model in _blacklisted_models:
@@ -62,8 +78,7 @@ def get_working_model():
             print(f"[WARN] Model {model} failed: {e}")
             continue
 
-    print("[FATAL] All models failed")
-    sys.exit(1)
+    raise RuntimeError("[FATAL] All models failed")
 
 
 def get_client():
@@ -72,10 +87,7 @@ def get_client():
     if _client is not None:
         return _client
 
-    api_key = _get_api_key()
-    if not api_key:
-        print("[FATAL] NVIDIA_API_KEY not found.")
-        sys.exit(1)
+    api_key = _require_api_key()
 
     model = get_working_model()
     _client = OpenAI(base_url=BASE_URL, api_key=api_key)
@@ -114,10 +126,7 @@ def handle_api_failure(error: Exception) -> bool:
     _current_model = None
     _client = None
 
-    api_key = _get_api_key()
-    if not api_key:
-        print("[FATAL] API key lost during fallback.")
-        return False
+    api_key = _require_api_key()
 
     while True:
         for model in MODELS:
@@ -148,5 +157,5 @@ def handle_api_failure(error: Exception) -> bool:
         print("[RETRY] Blacklist cleared. Retrying model chain...")
 
 
-# Eagerly select a working model at import time so every generator starts ready.
-get_working_model()
+# NOTE: no eager get_working_model() call here. Probing models requires the
+# API key and hits the network, so it must happen lazily on first use.
