@@ -91,6 +91,13 @@ def main():
     )
     parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
     parser.add_argument(
+        "--gpu-gb",
+        type=float,
+        default=12.8,
+        help="Per-GPU VRAM budget in GiB for the device map (default: 12.8; lower "
+        "it, e.g. 12.0, if forward passes OOM during direction collection)",
+    )
+    parser.add_argument(
         "--merge-method",
         default=None,
         choices=["merged_16bit", "merged_4bit"],
@@ -144,22 +151,54 @@ def main():
         # Building an EXPLICIT map with the overflow on 'cpu' dispatches into
         # RAM instead — the documented workaround for that ValueError.
         print("Computing an explicit device map (GPU split + CPU RAM overflow)...")
-        from accelerate import infer_auto_device_map
         from transformers import AutoConfig
 
         config = AutoConfig.from_pretrained(map_base, token=hf_token or None)
         with torch.device("meta"):
-            meta_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
-        # Each Qwen2DecoderLayer must stay on ONE device — unsloth's patching
-        # refuses split layers ("All parameters of Qwen2DecoderLayer should be
-        # on the same device"). The class attribute is not always present on
-        # from_config models, so fall back to the Qwen2 class name explicitly.
-        no_split = getattr(meta_model, "_no_split_modules", None) or ["Qwen2DecoderLayer"]
-        device_map = infer_auto_device_map(
-            meta_model,
-            max_memory={0: "13GiB", 1: "13GiB", "cpu": "30GiB"},
-            no_split_module_classes=no_split,
-        )
+            try:
+                # transformers >= 5.0 renamed torch_dtype -> dtype.
+                meta_model = AutoModelForCausalLM.from_config(config, dtype=torch.float16)
+            except TypeError:
+                meta_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
+
+        # Build the map by hand: every Qwen2DecoderLayer is assigned to ONE
+        # device (unsloth's patching refuses split layers, and accelerate's
+        # no_split_module_classes matching failed on transformers 5.5.0). Greedy
+        # fill: GPU 0 -> GPU 1 -> CPU RAM, whole layers only.
+        def module_fp16_bytes(mod):
+            return sum(p.numel() for p in mod.parameters()) * 2  # fp16 = 2 bytes
+
+        try:
+            pieces = [("model.embed_tokens", meta_model.model.embed_tokens)]
+            pieces += [
+                (f"model.layers.{i}", layer)
+                for i, layer in enumerate(meta_model.model.layers)
+            ]
+            pieces.append(("model.norm", meta_model.model.norm))
+            pieces.append(("lm_head", meta_model.lm_head))
+
+            gpu_limit = args.gpu_gb * (1024 ** 3)  # per GPU; leaves headroom for activations
+            gpu_used = {0: 0.0, 1: 0.0}
+            device_map = {}
+            for name, mod in pieces:
+                size = module_fp16_bytes(mod)
+                target = next((g for g in (0, 1) if gpu_used[g] + size <= gpu_limit), "cpu")
+                device_map[name] = target
+                if target != "cpu":
+                    gpu_used[target] += size
+            # lm_head is tied to embed_tokens in Qwen2: keep them on one device.
+            device_map["lm_head"] = device_map["model.embed_tokens"]
+        except (AttributeError, KeyError):
+            from accelerate import infer_auto_device_map
+
+            # Fallback if the module layout differs: let accelerate decide, with
+            # the layer class name pinned explicitly.
+            no_split = getattr(meta_model, "_no_split_modules", None) or ["Qwen2DecoderLayer"]
+            device_map = infer_auto_device_map(
+                meta_model,
+                max_memory={0: f"{args.gpu_gb}GiB", 1: f"{args.gpu_gb}GiB", "cpu": "30GiB"},
+                no_split_module_classes=no_split,
+            )
         del meta_model
         torch.cuda.empty_cache()
         cpu_modules = sum(1 for d in device_map.values() if str(d) == "cpu")
