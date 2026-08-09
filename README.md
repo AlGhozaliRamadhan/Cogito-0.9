@@ -13,6 +13,36 @@
 
 ---
 
+## 🏁 Finished Model (Hugging Face)
+
+The finished product is published on the Hub — a single **drop-in LoRA adapter** that combines Cogito's persona with abliteration (the refusal direction, layer 46 / magnitude 375.25, is removed from all 48 layers):
+
+- **Repo:** [ozaa77/Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) (public)
+- **Adapter:** rank-17 LoRA (`alpha=32`, all 7 target modules), math = exactly `cogito_delta + abliteration_delta`
+- **Base model:** `unsloth/qwen2.5-coder-14b-bnb-4bit`
+
+```python
+from unsloth import FastLanguageModel
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="ozaa77/Cogito-0.9", max_seq_length=1024,
+    dtype=None, load_in_4bit=True,
+)
+```
+
+```bash
+# interactive chat (The Body)
+python run.py --adapter ozaa77/Cogito-0.9
+# merge into a full standalone model
+python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9 --push-to-hub
+```
+
+> ⚠️ **Safety:** this model has had its **refusal direction removed** — it will comply with harmful requests it previously refused. Treat it as a **research artifact**: sandboxed environments only, never give it tool/API credentials, don't expose it to untrusted users.
+>
+> ⚠️ **Retraining:** `src/train.py` pushes a fresh **plain** adapter to this repo root on the final epoch — re-run `scripts/abliterate_cogito.py --smoke-test --push-to-hub` afterwards to restore the abliterated model.
+
+---
+
 ## Key Capabilities
 - **Agentic Loop:** Self-corrects and evaluates code by writing unit tests, running bash commands, and iterating on errors.
 - **Natural Conversational Tone:** Communicates concisely and directly without robotic sycophancy or unnecessary filler words.
@@ -123,7 +153,7 @@ Training produces a LoRA adapter (weights only). To turn the trained checkpoint 
 python scripts/merge_lora.py --push-to-hub
 
 # Merge a specific checkpoint and save locally instead:
-python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 --output-dir cogito_0.9_merged
+python scripts/merge_lora.py --adapter ./cogito_0.9_lora --output-dir cogito_0.9_merged
 ```
 
 `--adapter` accepts a local dir, a Hub repo id (auto-picks the newest `checkpoint-N`), or `repo_id/subfolder`. The base model recorded in `adapter_config.json` is loaded automatically.
@@ -140,10 +170,12 @@ The refusal direction is computed from the *trained* model (4-bit base + Cogito 
 
 ```bash
 # One command on Kaggle 2x T4 — compute + smoke-test + push the combined adapter:
-python scripts/abliterate_cogito.py --adapter ozaa77/Cogito-0.9/checkpoint-330 \
+python scripts/abliterate_cogito.py --adapter ./cogito_0.9_lora \
     --smoke-test --push-to-hub
+
+The Hub no longer hosts the plain Cogito checkpoints — they were pruned when the finished abliterated model was published. For a re-run, point `--adapter` at a **local** plain Cogito adapter (e.g. `./cogito_0.9_lora` from training).
 ```
-`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` (and optionally `ozaa77/Cogito-0.9-abliterated` on the Hub).
+`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` and is pushed to the Hub root (`ozaa77/Cogito-0.9`) — the finished-model repo.
 
 It is a **drop-in replacement** for the Cogito adapter — point run.py at it directly:
 
@@ -154,14 +186,15 @@ python run.py --adapter ./cogito_0.9_abliteration_adapter
 On a machine with ~60GB free disk and a 24GB+ GPU, merge it into one standalone full model:
 
 ```bash
-python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9-abliterated --push-to-hub
+python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9 --push-to-hub
 ```
 
 `--model` mode (the default) still abliterates the stock base (`Qwen/Qwen2.5-Coder-14B`) **in place** before training — that path needs a 24GB+ GPU and ~60GB free disk and is intended for machines, not Kaggle. To also publish the plain (non-abliterated) merged model, run `scripts/merge_lora.py` with `--push-to-hub --skip-local-save` on Kaggle (the 28GB bf16 merge cannot fit the 20GB working dir).
 
-Keep the Hub repo lean (each checkpoint is ~425MB) and optionally make it public:
+After any future training run, prune stale checkpoints from the Hub to keep the repo lean (each checkpoint is ~425MB):
 
 ```bash
-python scripts/cleanup_hub.py --keep 1          # keep only the final checkpoint (e.g. checkpoint-330)
-python scripts/cleanup_hub.py --keep 1 --make-public
+python scripts/cleanup_hub.py --keep 1   # keep only the latest checkpoint-N
 ```
+
+(The repo is already public, and all checkpoints were removed when the finished abliterated model was published.)

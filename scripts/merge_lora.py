@@ -19,8 +19,9 @@
 #       --push-to-hub --push-repo ozaa77/Cogito-0.9-merged
 #
 #   # Merge the ABLITERATED adapter (base + Cogito + abliteration, emitted by
-#   # scripts/abliterate_cogito.py --adapter mode) into a full standalone model:
-#   python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9-abliterated --push-to-hub
+#   # scripts/abliterate_cogito.py --adapter mode, published at the root of
+#   # ozaa77/Cogito-0.9) into a full standalone model:
+#   python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9 --push-to-hub
 #
 #   # Save locally only (no upload):
 #   python scripts/merge_lora.py --adapter cogito_0.9_lora --output-dir cogito_0.9_merged

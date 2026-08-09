@@ -121,7 +121,7 @@ def main():
     )
     parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
-    parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9-abliterated", help="Hub repo for --push-to-hub")
+    parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
