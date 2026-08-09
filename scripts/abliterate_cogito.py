@@ -398,7 +398,11 @@ def main():
         ablit_cfg.update({
             "r": r_new,
             "lora_dropout": 0,
-            "init_lora_weights": False,
+            # MUST be True (the Cogito adapter uses true). With False, peft
+            # SKIPS loading the checkpoint's LoRA weights entirely and reports
+            # every key as missing — a known peft gotcha. True loads the 672
+            # tensors over the initialisation.
+            "init_lora_weights": True,
         })
 
         # Mirror the Cogito target modules, plus o_proj/down_proj which the
@@ -499,9 +503,14 @@ def main():
                     a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
                     b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
 
+                # NOTE: key format must match what peft 0.19.x / unsloth save
+                # and expect on load: NO '.default' suffix (verified against the
+                # Cogito adapter's own safetensors — keys are
+                # '...lora_A.weight' / '...lora_B.weight'). Writing the
+                # '.default' form makes peft report every key missing.
                 prefix = f"base_model.model.model.layers.{l}.{proj_path}"
-                lora_state[f"{prefix}.lora_A.default.weight"] = torch.cat([a_cog, a_ablit], dim=0)  # [r_new, in]
-                lora_state[f"{prefix}.lora_B.default.weight"] = torch.cat([b_cog, b_ablit], dim=1)  # [out, r_new]
+                lora_state[f"{prefix}.lora_A.weight"] = torch.cat([a_cog, a_ablit], dim=0)  # [r_new, in]
+                lora_state[f"{prefix}.lora_B.weight"] = torch.cat([b_cog, b_ablit], dim=1)  # [out, r_new]
         del model
         torch.cuda.empty_cache()
 
@@ -509,6 +518,24 @@ def main():
         with open(os.path.join(SAVE_PATH, "adapter_config.json"), "w", encoding="utf-8") as fh:
             json.dump(ablit_cfg, fh, indent=2)
         safetensors.torch.save_file(lora_state, os.path.join(SAVE_PATH, "adapter_model.safetensors"))
+        # Bundle the tokenizer so the adapter dir is fully self-contained: the
+        # smoke test and run.py load it together with the model, and without
+        # chat_template.jinja / tokenizer_config.json the loaded tokenizer has
+        # no chat_template (apply_chat_template would crash).
+        import shutil
+        bundled = 0
+        for name in sorted(os.listdir(adapter_path)):
+            if (
+                name.startswith("tokenizer")
+                or name.startswith("special_tokens_map")
+                or name.startswith("added_tokens")
+                or name == "chat_template.jinja"
+            ):
+                src = os.path.join(adapter_path, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(SAVE_PATH, name))
+                    bundled += 1
+        print(f"  [ADAPTER] Bundled {bundled} tokenizer file(s) into the adapter dir.")
         print(f"\n[DONE] Abliterated Cogito adapter saved to {SAVE_PATH} "
               f"({len(lora_state)} tensors, r={r_new}). Drop-in replacement for the "
               f"Cogito adapter: run.py --adapter {SAVE_PATH}")
