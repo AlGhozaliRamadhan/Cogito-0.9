@@ -124,8 +124,15 @@ def resolve_adapter(adapter_arg: str, token) -> str:
             token=token,
         )
     else:
+        # snapshot_download has NO subfolder kwarg (that is a transformers-only
+        # parameter). Scope the download to the subfolder with allow_patterns;
+        # with local_dir the repo tree is preserved, so files land under
+        # cache_dir/<subfolder>/... and find_adapter_dir() picks them up.
         snapshot_download(
-            repo_id=repo_id, subfolder=subfolder, local_dir=cache_dir, token=token
+            repo_id=repo_id,
+            local_dir=cache_dir,
+            allow_patterns=[f"{subfolder}/*"],
+            token=token,
         )
     adapter_dir = find_adapter_dir(cache_dir)
     if adapter_dir is None:
