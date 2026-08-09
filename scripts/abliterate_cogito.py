@@ -171,37 +171,91 @@ def main():
         return
 
     # 2. Load Cogito's Agentic (Harmless) Data
+    #    This anchors the refusal direction in Cogito's OWN behavior so its
+    #    freewill ("refuse to guess") is preserved while generic safety
+    #    refusals are removed. Sources are tried local-first because on Kaggle
+    #    the files used for training are guaranteed present (data/raw shards,
+    #    combined_dense_dataset.jsonl), while the HF dataset repo depends on
+    #    the installed datasets version.
     print("Loading Cogito's master dataset to preserve freewill...")
     harmless_prompts = []
 
-    # Try Hugging Face dataset first
-    try:
-        harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
-        for data in harmless_ds:
-            messages = data.get("messages", [])
-            user_msg = next((m["content"] for m in messages if m["role"] == "user"), None)
-            if user_msg:
-                harmless_prompts.append([{"role": "user", "content": user_msg}])
-            if len(harmless_prompts) >= NUM_SAMPLES:
-                break
-    except Exception as e:
-        print(f"Failed to load HF dataset, trying local file: {e}")
+    def _user_msgs_from_record(data):
+        """Yield user message contents from one record. Handles both native
+        message lists and JSON-string lists (the two upload scripts store
+        messages differently)."""
+        messages = data.get("messages", [])
+        if isinstance(messages, str):
+            try:
+                messages = json.loads(messages)
+            except Exception:
+                return
+        for m in messages or []:
+            if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
+                yield m["content"]
 
-    if len(harmless_prompts) < NUM_SAMPLES:
-        if os.path.exists(DATASET_PATH):
-            with open(DATASET_PATH, 'r', encoding='utf-8') as f:
-                for line in f:
+    def _collect_from_file(path, target):
+        collected = []
+        if not os.path.isfile(path):
+            return collected
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     data = json.loads(line)
-                    messages = data.get("messages", [])
-                    user_msg = next((m["content"] for m in messages if m["role"] == "user"), None)
-                    if user_msg:
-                        harmless_prompts.append([{"role": "user", "content": user_msg}])
+                except json.JSONDecodeError:
+                    continue
+                for msg in _user_msgs_from_record(data):
+                    collected.append([{"role": "user", "content": msg}])
+                    if len(collected) >= target:
+                        return collected
+        return collected
+
+    # Local candidates: dense training file, master dataset, then all raw shards.
+    local_candidates = [
+        os.path.join(PROJECT_ROOT, "combined_dense_dataset.jsonl"),
+        DATASET_PATH,  # cogito_0.9_master_dataset.jsonl
+    ]
+    raw_dir = os.path.join(PROJECT_ROOT, "data", "raw")
+    if os.path.isdir(raw_dir):
+        local_candidates += sorted(
+            os.path.join(raw_dir, name)
+            for name in os.listdir(raw_dir) if name.endswith(".jsonl")
+        )
+    for path in local_candidates:
+        if len(harmless_prompts) >= NUM_SAMPLES:
+            break
+        found = _collect_from_file(path, NUM_SAMPLES - len(harmless_prompts))
+        if found:
+            print(f"  [DATA] +{len(found)} harmless prompts from "
+                  f"{os.path.relpath(path, PROJECT_ROOT)}")
+        harmless_prompts += found
+
+    # HF fallback (ozaa77/Cogito-0.9-dataset is public).
+    if len(harmless_prompts) < NUM_SAMPLES:
+        before = len(harmless_prompts)
+        try:
+            harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
+            for data in harmless_ds:
+                for msg in _user_msgs_from_record(data):
+                    harmless_prompts.append([{"role": "user", "content": msg}])
                     if len(harmless_prompts) >= NUM_SAMPLES:
                         break
-        else:
-            print(f"Dataset {DATASET_PATH} not found. Please run this script from the scripts/ "
-                  "directory or ensure HF dataset is accessible.")
-            return
+                if len(harmless_prompts) >= NUM_SAMPLES:
+                    break
+            print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
+                  f"from Hugging Face dataset")
+        except Exception as e:
+            print(f"  [DATA] HF dataset unavailable ({e}) — using local sources only.")
+
+    if len(harmless_prompts) < NUM_SAMPLES:
+        print(f"[FATAL] Could not gather {NUM_SAMPLES} harmless prompts "
+              f"(got {len(harmless_prompts)}). Ensure Cogito shards exist in "
+              f"data/raw/ or run data/build_dense_dataset.py to produce "
+              f"combined_dense_dataset.jsonl, then re-run.")
+        return
 
     print(f"Gathered {len(harmful_prompts)} harmful and {len(harmless_prompts)} harmless (Cogito) prompts.")
 
