@@ -164,6 +164,13 @@ def main():
         help="Also merge and push the full model to the Hub",
     )
     parser.add_argument(
+        "--skip-local-save",
+        action="store_true",
+        help="Skip saving the merged model to disk and stream it straight to the "
+        "Hub via --push-to-hub (for tight-disk environments like Kaggle's 20GB "
+        "/kaggle/working). Ignored if --output-dir is given.",
+    )
+    parser.add_argument(
         "--push-repo",
         default="ozaa77/Cogito-0.9-merged",
         help="Hub repo id to push the merged full model to",
@@ -239,14 +246,19 @@ def main():
         print("[WARN] No 'lora_' modules found in the loaded model — "
               "the adapter may not have been applied.")
 
-    # Always save locally first: the merge is the expensive step, so a failed
-    # upload (common on Kaggle) must not lose it. Spot-check the local copy
-    # before the 28GB push if you want.
-    out = os.path.abspath(args.output_dir or os.path.join(PROJECT_ROOT, "cogito_0.9_merged"))
-    os.makedirs(out, exist_ok=True)
-    print(f"\nMerging (16-bit) and saving to {out} ...")
-    model.save_pretrained_merged(out, tokenizer, save_method="merged_16bit")
-    print(f"[DONE] Merged full model saved to {out}")
+    # Save locally unless the user said skip. On Kaggle the 20GB /kaggle/working
+    # quota cannot hold a 28GB bf16 merge, so --push-to-hub --skip-local-save
+    # streams the merged model to the Hub instead (Unsloth's push path is
+    # designed to work without free disk space).
+    save_locally = bool(args.output_dir) or not args.skip_local_save
+    if save_locally:
+        out = os.path.abspath(args.output_dir or os.path.join(PROJECT_ROOT, "cogito_0.9_merged"))
+        os.makedirs(out, exist_ok=True)
+        print(f"\nMerging (16-bit) and saving to {out} ...")
+        model.save_pretrained_merged(out, tokenizer, save_method="merged_16bit")
+        print(f"[DONE] Merged full model saved to {out}")
+    elif not args.push_to_hub:
+        raise SystemExit("[FATAL] --skip-local-save without --push-to-hub or --output-dir would produce nothing.")
 
     if args.push_to_hub:
         print(f"\nPushing the merged model to https://huggingface.co/{args.push_repo} ...")

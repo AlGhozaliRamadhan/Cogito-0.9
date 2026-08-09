@@ -128,18 +128,18 @@ python scripts/merge_lora.py --adapter ozaa77/Cogito-0.9/checkpoint-330 --output
 
 ### Abliterate the Trained Model (No Retraining)
 
-To remove the refusal direction from the FINAL trained weights — without training again — merge first, then abliterate the merged full model. Abliteration is a weight edit, so it works on any checkpoint of the same architecture:
+Abliteration is a weight edit, so it can be applied to the FINAL trained weights — no retraining. On Kaggle (20GB `/kaggle/working` quota) use `--adapter` mode: the adapter is merged into its base **in GPU memory**, abliterated, and streamed to the Hub shard-by-shard, so nothing big is ever written to disk:
 
 ```bash
-# 1. Merge the step-330 adapter into the base (full 14B model in ./cogito_0.9_merged)
-python scripts/merge_lora.py
-
-# 2. Abliterate the merged model (use an absolute path) and push it to a new repo
-python scripts/abliterate_cogito.py --model /kaggle/working/Cogito-0.9/cogito_0.9_merged \
-    --output-dir /kaggle/working/Cogito-0.9/cogito_0.9_merged_abliterated \
+# One command on Kaggle 2x T4 — merge + abliterate + smoke-test + push:
+python scripts/abliterate_cogito.py --adapter ozaa77/Cogito-0.9/checkpoint-330 \
     --smoke-test --push-to-hub
 ```
 `--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model.
+
+On a machine with ~60GB free disk and a 24GB+ GPU, `--model` mode works the same on a full merged model (e.g. `--model cogito_0.9_merged`).
+
+To also publish the plain (non-abliterated) merged model, run `scripts/merge_lora.py` first. On Kaggle use `--push-to-hub --skip-local-save` (the 28GB bf16 merge cannot fit in the 20GB working dir); on a big-disk machine just `python scripts/merge_lora.py` saves it locally too.
 
 `--model` also still accepts the stock base (`Qwen/Qwen2.5-Coder-14B`, the default) if you want to abliterate before training instead.
 
