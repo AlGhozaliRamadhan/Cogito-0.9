@@ -221,7 +221,7 @@ HUB_KEEP_CHECKPOINTS = 2  # Keep the N most recent checkpoints on the Hub; prune
 def _prune_old_hub_checkpoints(hf_token: str):
     """Delete older checkpoint-N/ dirs on the Hub, keeping the HUB_KEEP_CHECKPOINTS
     most recent. Keeps the repo lean (~2 x 424MB instead of one per 50 steps)."""
-    from huggingface_hub import HfApi
+    from huggingface_hub import HfApi, RepoFolder
 
     try:
         api = HfApi()
@@ -235,7 +235,12 @@ def _prune_old_hub_checkpoints(hf_token: str):
         steps = []
         for entry in entries:
             name = getattr(entry, "path", "")
-            if entry.type == "folder" and name.startswith("checkpoint-"):
+            # list_repo_tree returns RepoFolder/RepoFile objects in huggingface_hub
+            # >=0.24, not the legacy dict entries that had a .type attribute. Checking
+            # entry.type raised "'RepoFolder' object has no attribute 'type'", which the
+            # except below swallowed as non-fatal — so pruning silently never ran and the
+            # repo kept one checkpoint-N/ folder per save forever.
+            if isinstance(entry, RepoFolder) and name.startswith("checkpoint-"):
                 try:
                     steps.append(int(name.split("-")[-1]))
                 except ValueError:
@@ -380,7 +385,15 @@ training_args = SFTConfig(
     num_train_epochs=args.epochs,                                        
     fp16=not torch.cuda.is_bf16_supported(),
     bf16=torch.cuda.is_bf16_supported(),
-    optim="adamw_8bit",                                              
+    # adamw_torch, NOT adamw_8bit: the bitsandbytes 8-bit optimizer's state_dict()
+    # serialization is the prime suspect for the save-adjacent DDP hang. The crash
+    # log shows rank 0 stalled on the first all_gather right after checkpoint-220
+    # saved a 141MB optimizer.pt (the bnb state), and known bnb issues hang the GPU
+    # when saving 8-bit optimizer state across ranks. LoRA trainable params are only
+    # ~0.3% of the 14B base, so fp32 AdamW for those is cheap on 2x T4 and far more
+    # DDP-stable. Resume from an old bnb checkpoint still works: Trainer logs a
+    # warning and starts a fresh optimizer if the state dict doesn't match.
+    optim="adamw_torch",
     weight_decay=0.01,
     max_grad_norm=1.0,                                    
     logging_steps=5,
