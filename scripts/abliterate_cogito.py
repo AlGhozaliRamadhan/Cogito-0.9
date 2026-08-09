@@ -181,16 +181,22 @@ def main():
     harmless_prompts = []
 
     def _user_msgs_from_record(data):
-        """Yield user message contents from one record. Handles both native
-        message lists and JSON-string lists (the two upload scripts store
-        messages differently)."""
+        """Yield user message contents from one record. Handles native message
+        lists, JSON-string lists (the two upload scripts store messages
+        differently), and numpy arrays (what pandas.read_parquet returns)."""
         messages = data.get("messages", [])
         if isinstance(messages, str):
             try:
                 messages = json.loads(messages)
             except Exception:
                 return
-        for m in messages or []:
+        if messages is None:
+            return
+        try:
+            messages = list(messages)
+        except TypeError:
+            return
+        for m in messages:
             if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
                 yield m["content"]
 
@@ -233,22 +239,46 @@ def main():
                   f"{os.path.relpath(path, PROJECT_ROOT)}")
         harmless_prompts += found
 
-    # HF fallback (ozaa77/Cogito-0.9-dataset is public).
+    # HF fallback (ozaa77/Cogito-0.9-dataset is public). The datasets library
+    # crashes on some Kaggle installs ('module' object is not callable), so
+    # prefer a DIRECT parquet download via huggingface_hub + pandas — both are
+    # guaranteed present on Kaggle — and use load_dataset only as a last resort.
     if len(harmless_prompts) < NUM_SAMPLES:
         before = len(harmless_prompts)
         try:
-            harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
-            for data in harmless_ds:
-                for msg in _user_msgs_from_record(data):
+            from huggingface_hub import hf_hub_download
+            import pandas as pd
+            parquet_path = hf_hub_download(
+                repo_id="ozaa77/Cogito-0.9-dataset",
+                filename="data/train-00000-of-00001.parquet",
+                repo_type="dataset",
+                token=hf_token or None,
+            )
+            df = pd.read_parquet(parquet_path)
+            for _, row in df.iterrows():
+                for msg in _user_msgs_from_record(row.to_dict()):
                     harmless_prompts.append([{"role": "user", "content": msg}])
                     if len(harmless_prompts) >= NUM_SAMPLES:
                         break
                 if len(harmless_prompts) >= NUM_SAMPLES:
                     break
             print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
-                  f"from Hugging Face dataset")
+                  f"from Hugging Face dataset (parquet)")
         except Exception as e:
-            print(f"  [DATA] HF dataset unavailable ({e}) — using local sources only.")
+            print(f"  [DATA] HF parquet source failed ({e}) — trying load_dataset...")
+            try:
+                harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
+                for data in harmless_ds:
+                    for msg in _user_msgs_from_record(data):
+                        harmless_prompts.append([{"role": "user", "content": msg}])
+                        if len(harmless_prompts) >= NUM_SAMPLES:
+                            break
+                    if len(harmless_prompts) >= NUM_SAMPLES:
+                        break
+                print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
+                      f"from Hugging Face dataset")
+            except Exception as e2:
+                print(f"  [DATA] HF dataset unavailable ({e2}) — using local sources only.")
 
     if len(harmless_prompts) < NUM_SAMPLES:
         print(f"[FATAL] Could not gather {NUM_SAMPLES} harmless prompts "
