@@ -440,6 +440,56 @@ def find_latest_local_checkpoint(root: str) -> str | None:
     return os.path.join(root, f"checkpoint-{steps[-1]}")
 
 
+def sanitize_resume_checkpoint(ckpt_dir: str) -> str:
+    """Make a resume checkpoint compatible with the current optimizer.
+
+    We switched optim from adamw_8bit (bitsandbytes) to adamw_torch. bnb's
+    optimizer.pt stores keys like state1/state2/absmax1 while torch AdamW expects
+    exp_avg/exp_avg_sq. Trainer.load_optimizer_state loads the file
+    unconditionally, so resuming an old bnb checkpoint into adamw_torch dies with
+    KeyError('exp_avg') at the very first optimizer.step() (observed on 2x T4).
+    Detect the mismatch and drop just optimizer.pt/scheduler.pt: the LoRA weights
+    and step counter (trainer_state.json) are kept, and the optimizer restarts
+    fresh — which is exactly what a LoRA resume needs. Only fires once, when a
+    bnb checkpoint meets a torch-optimizer run.
+    """
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return ckpt_dir
+    opt_path = os.path.join(ckpt_dir, "optimizer.pt")
+    if not os.path.isfile(opt_path):
+        return ckpt_dir
+    try:
+        state = torch.load(opt_path, map_location="cpu")
+    except Exception as exc:
+        print(f"[RESUME] Could not read {opt_path}: {exc}; discarding optimizer state.")
+        state = None
+    opt_name = state.get("optimizer_name", "") if isinstance(state, dict) else ""
+    opt_name = opt_name if isinstance(opt_name, str) else ""
+    opt_class = getattr(state.get("optimizer_class"), "__name__", "") if isinstance(state, dict) else ""
+    is_bnb = (
+        isinstance(state, dict)
+        and (
+            "bitsandbytes" in (opt_name + opt_class).lower()
+            or any(k in state for k in ("state1", "state2", "absmax1", "absmax2"))
+        )
+    )
+    if not is_bnb:
+        return ckpt_dir
+    print(
+        "[RESUME] Checkpoint optimizer is bitsandbytes (old adamw_8bit); current run "
+        "uses adamw_torch. Dropping optimizer.pt/scheduler.pt — LoRA weights and step "
+        "counter kept, optimizer restarts fresh."
+    )
+    for fname in ("optimizer.pt", "scheduler.pt", "scaler.pt", "rng_state_0.pth", "rng_state_1.pth"):
+        path = os.path.join(ckpt_dir, fname)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                print(f"[RESUME] Warning: could not remove {path}: {exc}")
+    return ckpt_dir
+
+
 def collect_checkpoint_step(revision: str = "main") -> str:
     """Refresh a local snapshot dir from the Hub's checkpoint-N folders.
 
@@ -534,6 +584,10 @@ if not resume_dir:
         print(f"\n[RESUME] Local checkpoint found: {resume_dir}")
 if not resume_dir:
     resume_dir = collect_checkpoint_step(revision="main")
+# Every resume path goes through the optimizer-compat sanitizer, so switching
+# optim (bnb -> torch) can never crash the first step with KeyError('exp_avg').
+if resume_dir:
+    resume_dir = sanitize_resume_checkpoint(resume_dir)
 
 try:
     checkpoint_path = resume_dir
