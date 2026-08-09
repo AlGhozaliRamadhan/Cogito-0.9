@@ -250,13 +250,25 @@ def _prune_old_hub_checkpoints(hf_token: str):
         stale = sorted(steps)[:-HUB_KEEP_CHECKPOINTS]
         for step in stale:
             print(f"[HF] Pruning old checkpoint-{step} from Hub...")
-            api.delete_folder(
-                repo_id=HUB_REPO_ID,
-                repo_type="model",
-                folder_path=f"checkpoint-{step}",
-                revision=CPT_REVISION,
-                token=hf_token,
-            )
+            try:
+                # huggingface_hub >=0.25 uses path_in_repo; older versions used
+                # folder_path. Prefer path_in_repo, fall back on TypeError so the
+                # prune works regardless of the installed version.
+                api.delete_folder(
+                    repo_id=HUB_REPO_ID,
+                    repo_type="model",
+                    path_in_repo=f"checkpoint-{step}",
+                    revision=CPT_REVISION,
+                    token=hf_token,
+                )
+            except TypeError:
+                api.delete_folder(
+                    repo_id=HUB_REPO_ID,
+                    repo_type="model",
+                    folder_path=f"checkpoint-{step}",
+                    revision=CPT_REVISION,
+                    token=hf_token,
+                )
     except Exception as exc:
         print(f"[HF] Prune checkpoints failed (non-fatal): {exc}")
 
