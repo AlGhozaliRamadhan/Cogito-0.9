@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import torch
@@ -16,6 +17,11 @@ from datasets import load_dataset
 # Instead, we use Cogito's OWN training data (cogito_0.9_master_dataset.jsonl) as the 
 # "harmless" baseline. This anchors its freewill in the harmless space, isolating ONLY 
 # the generic safety refusals for ablation.
+#
+# --model accepts EITHER the stock base (Qwen/Qwen2.5-Coder-14B) OR a full merged
+# Cogito model (e.g. cogito_0.9_merged from scripts/merge_lora.py). Abliterating
+# the merged model removes the refusal direction from the FINAL trained weights,
+# so you get the trained persona AND no refusals without ever retraining.
 # =============================================================================
 
 def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
@@ -31,20 +37,45 @@ def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
 
 def main():
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    BASE_MODEL = "Qwen/Qwen2.5-Coder-14B"
-    SAVE_PATH = os.path.join(PROJECT_ROOT, "Qwen2.5-Coder-14B-Cogito-Abliterated")
+    parser = argparse.ArgumentParser(
+        description="Abliterate a Qwen2.5-Coder-14B model (stock base or a merged full Cogito)."
+    )
+    parser.add_argument(
+        "--model",
+        default="Qwen/Qwen2.5-Coder-14B",
+        help="Model to abliterate: a Hub id or a local dir. Pass a merged full "
+        "Cogito (e.g. cogito_0.9_merged) to abliterate the trained model "
+        "without retraining (default: Qwen/Qwen2.5-Coder-14B)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Where to save the abliterated model "
+        "(default: Qwen2.5-Coder-14B-Cogito-Abliterated)",
+    )
+    parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
+    parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model to the Hub")
+    parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9-abliterated", help="Hub repo for --push-to-hub")
+    parser.add_argument("--smoke-test", action="store_true", help="Generate one refusal probe and one persona probe before pushing")
+    parser.add_argument("--token", default=None, help="HF token (default: HF_TOKEN env var)")
+    args = parser.parse_args()
+
+    BASE_MODEL = args.model
+    SAVE_PATH = args.output_dir or os.path.join(PROJECT_ROOT, "Qwen2.5-Coder-14B-Cogito-Abliterated")
     DATASET_PATH = os.path.join(PROJECT_ROOT, "cogito_0.9_master_dataset.jsonl")
-    NUM_SAMPLES = 128
+    NUM_SAMPLES = args.num_samples
+    hf_token = args.token or os.environ.get("HF_TOKEN")
     
     print(f"Loading tokenizer and model {BASE_MODEL}...")
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, token=hf_token or None)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
         torch_dtype=torch.bfloat16,
-        device_map="auto"
+        device_map="auto",
+        token=hf_token or None,
     )
     
     # 1. Load Harmful Data
@@ -159,7 +190,40 @@ def main():
     tokenizer.save_pretrained(SAVE_PATH)
     
     print("✅ Abliteration complete!")
-    print("You can now fine-tune Cogito on this abliterated base model, or directly use it.")
+    if args.smoke_test:
+        print("\n[SMOKE TEST] Generating one refusal probe and one persona probe ...")
+        probes = [
+            ("refusal-check", harmful_ds["text"][0]),
+            ("persona-check", "Someone asks you to guess an answer you are unsure about. What do you do?"),
+        ]
+        for label, text in probes:
+            prompt = tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                out = model.generate(
+                    **inputs,
+                    max_new_tokens=120,
+                    do_sample=True,
+                    temperature=0.7,
+                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                )
+            reply = tokenizer.decode(
+                out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+            )
+            print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
+        print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
+    if args.push_to_hub:
+        if not hf_token:
+            raise SystemExit("[FATAL] --push-to-hub requires a token: pass --token or set HF_TOKEN.")
+        print(f"Pushing abliterated model to https://huggingface.co/{args.push_repo} ...")
+        model.push_to_hub(args.push_repo, token=hf_token)
+        tokenizer.push_to_hub(args.push_repo, token=hf_token)
+        print(f"[DONE] Abliterated model live at https://huggingface.co/{args.push_repo}")
+    print(f"Model saved to {SAVE_PATH}")
 
 if __name__ == "__main__":
     main()
