@@ -19,20 +19,24 @@
 #
 # 2) --adapter <LoRA>            Abliterate the TRAINED model without retraining
 #                                and without a 28GB disk write: the adapter is
-#                                merged into its base IN MEMORY (bf16 across GPU
-#                                VRAM), the refusal direction is computed from
-#                                the trained weights, and the result is streamed
-#                                to the Hub shard-by-shard. Use with
-#                                --push-to-hub on Kaggle:
+#                                loaded with its base in fp16 IN MEMORY (split
+#                                across both T4s, overflow to CPU RAM), the
+#                                refusal direction is computed from the trained
+#                                weights, and the result is streamed to the Hub
+#                                shard-by-shard. Use with --push-to-hub on
+#                                Kaggle:
 #
 #     python scripts/abliterate_cogito.py \
 #         --adapter ozaa77/Cogito-0.9/checkpoint-330 \
 #         --smoke-test --push-to-hub
 # =============================================================================
 
+import os
+# Reduce CUDA fragmentation on the 2x T4 setup (same setting train.py uses).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import argparse
 import json
-import os
 import sys
 
 import torch
@@ -52,7 +56,9 @@ def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     matrix: shape (out_features, in_features)
     vec: shape (in_features,)
     """
-    vec_norm = vec / vec.norm()
+    # Some layers may be CPU-offloaded (device_map="auto" on 2x T4 with a
+    # 28GB fp16 model), so vec must live on the same device as the matrix.
+    vec_norm = (vec / vec.norm()).to(matrix.device)
     # Projection of matrix rows onto vec_norm
     proj = (matrix @ vec_norm).unsqueeze(1) * vec_norm.unsqueeze(0)
     return matrix - proj
@@ -113,26 +119,25 @@ def main():
         print(f"[ADAPTER] Using trained adapter: {adapter_path}")
         from unsloth import FastLanguageModel
 
-        # Load the 4-bit base (~9GB download, fits Kaggle's disk) and dequantize
-        # to fp16 IN GPU MEMORY — avoids downloading 29GB of fp16 weights to
-        # disk. LoRA adapters stay attached through dequantize, so the trained
-        # model is abliterated as-is and streamed to the Hub shard-by-shard.
-        print("Loading adapter + base in 4-bit, then dequantizing to fp16 in VRAM...")
+        # Load fp16 DIRECTLY (28GB). dequantize() is a dead end here: it
+        # materializes fp16 on top of the 4-bit copy, needing ~37GB on 2x T4
+        # (29GB usable) -> OOM. device_map="auto" fits the 28GB by offloading
+        # the ~1.5GB overflow to CPU RAM, exactly like the --model mode already
+        # does. The 29GB weight download to the HF cache worked fine last run.
+        print("Loading adapter + base in fp16 (28GB; overflow layers go to CPU RAM)...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=adapter_path,
             max_seq_length=1024,
-            dtype=None,
-            load_in_4bit=True,
-            device_map="auto",  # split across both T4s
+            dtype=torch.float16,
+            load_in_4bit=False,
+            device_map="auto",  # splits across both T4s, offloads overflow to CPU
             token=hf_token or None,
         )
-        torch.cuda.empty_cache()
-        model = model.dequantize()
         torch.cuda.empty_cache()
         device_map = getattr(model, "hf_device_map", None)
         print(f"[GPU] Model device map: {device_map}")
         if device_map and all("cpu" in str(d).lower() for d in device_map.values()):
-            raise SystemExit("[FATAL] Model landed on CPU — not enough VRAM to abliterate in memory.")
+            raise SystemExit("[FATAL] Model landed entirely on CPU — not enough VRAM to abliterate.")
         model.eval()
         torch.cuda.empty_cache()
     else:
@@ -218,9 +223,11 @@ def main():
         return mean_hidden_states
 
     print("Collecting activations for harmful prompts...")
+    torch.cuda.empty_cache()
     harmful_means = get_last_token_hidden_states(harmful_prompts)
 
     print("Collecting activations for harmless (Cogito) prompts...")
+    torch.cuda.empty_cache()
     harmless_means = get_last_token_hidden_states(harmless_prompts)
 
     # 3. Compute Refusal Directions
