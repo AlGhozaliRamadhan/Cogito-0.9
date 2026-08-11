@@ -24,6 +24,11 @@ SHARD_MULTIPLIERS = {
     "cogito_heated_conversations.jsonl": 1,
     "cogito_human_conversations.jsonl": 2,
     "cogito_identity_core.jsonl": 3,
+    # Hand-written self-referential identity shard: Cogito is a named entity,
+    # not a generic assistant. High multiplier so the exact questions the model
+    # used to fumble ('who are you', 'what model are you', 'how do you feel',
+    # 'what is your name') dominate the identity signal.
+    "cogito_identity_self.jsonl": 5,
     "cogito_personality_quirks.jsonl": 1,
     "cogito_philosophical_probing.jsonl": 4,
     "cogito_retrieval_filter.jsonl": 1,
