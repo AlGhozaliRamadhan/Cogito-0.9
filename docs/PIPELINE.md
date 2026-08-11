@@ -103,6 +103,23 @@ Computes the refusal direction from the base model and emits ONE combined
 adapter (Cogito LoRA + rank-1 abliteration delta, r = cog_r + 1). Adapter
 keys saved without `.default` suffix (peft ≥0.19 format).
 
+Two AutoAbliteration-style knobs (both optional; defaults match the proven
+Kaggle run):
+
+- `--target-layer auto` (default) picks the layer with the largest
+  harmful-vs-baseline activation gap and prints the per-layer magnitude
+  curve so you can see where refusal lives. Pass a fraction 0–1 (e.g.
+  `0.65`) to force a specific layer instead.
+- `--refusal-weight 1.0` (default) removes the refusal direction fully.
+  Lower values (e.g. `0.7`) do a *partial* abliteration — useful because
+  the Cogito baseline is its own data, so the direction is noisy and full
+  removal can also carve out freewill. The combined adapter stays exact
+  for any weight: `base + adapter = W − w·(W@v̂)⊗v̂`.
+
+```bash
+python scripts/abliterate_cogito.py --adapter <cogito_adapter_path> \
+    --target-layer 0.65 --refusal-weight 0.7 --smoke-test
+
 ## 6. Merge full model (optional, for inference/deploy)
 
 ```bash

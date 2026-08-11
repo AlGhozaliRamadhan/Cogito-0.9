@@ -177,6 +177,15 @@ The Hub no longer hosts the plain Cogito checkpoints — they were pruned when t
 ```
 `--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` and is pushed to the Hub root (`ozaa77/Cogito-0.9`) — the finished-model repo.
 
+Two AutoAbliteration-style knobs are available (defaults match the published run):
+- `--target-layer <frac>` — refusal direction from a specific layer fraction 0–1 (the notebook's `TARGET_LAYER` slider). Default `auto` picks the argmax-magnitude layer and prints the per-layer magnitude curve.
+- `--refusal-weight <0..2>` — how much of the refusal direction to remove (the notebook's `REFUSAL_WEIGHT` slider). `1.0` = full removal (default); lower values do a *partial* abliteration, which can preserve more of Cogito's freewill since the Cogito baseline is its own data:
+
+```bash
+python scripts/abliterate_cogito.py --adapter ./cogito_0.9_lora \
+    --target-layer 0.65 --refusal-weight 0.7 --smoke-test --push-to-hub
+```
+
 It is a **drop-in replacement** for the Cogito adapter — point run.py at it directly:
 
 ```bash

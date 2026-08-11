@@ -54,21 +54,24 @@ from datasets import load_dataset
 from cogito.scripts.merge_lora import resolve_adapter  # noqa: E402
 
 
-def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+def orthogonalize(matrix: torch.Tensor, vec: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
     """
     Orthogonalizes the rows of a weight matrix with respect to a vector.
     matrix: shape (out_features, in_features)
     vec: shape (in_features,)  -- must live in the matrix's INPUT space
+    weight: refusal weight in [0, 2] (the notebook's REFUSAL_WEIGHT slider).
+            1.0 removes the refusal direction completely; <1.0 scales the
+            removal down (partial abliteration), >1.0 over-removes.
     """
     # Some layers may be CPU-offloaded (device_map="auto" on 2x T4 with a
     # 28GB fp16 model), so vec must live on the same device as the matrix.
     vec_norm = (vec / vec.norm()).to(matrix.device)
     # Projection of matrix rows onto vec_norm
     proj = (matrix @ vec_norm).unsqueeze(1) * vec_norm.unsqueeze(0)
-    return matrix - proj
+    return matrix - weight * proj
 
 
-def orthogonalize_cols(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+def orthogonalize_cols(matrix: torch.Tensor, vec: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
     """
     Orthogonalizes the COLUMNS of a weight matrix against a vector that lives
     in the matrix's OUTPUT space. Needed for projections whose input space is
@@ -78,7 +81,7 @@ def orthogonalize_cols(matrix: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     space (the residual stream), so the standard trick is to run the row edit
     on the transpose: W' = W - v̂⊗(Wᵀv̂)ᵀ, i.e. (orthogonalize(Wᵀ, v̂))ᵀ.
     """
-    return orthogonalize(matrix.t(), vec).t()
+    return orthogonalize(matrix.t(), vec, weight).t()
 
 
 def read_adapter_base(adapter_path: str):
@@ -119,6 +122,23 @@ def main():
         "--adapter mode)",
     )
     parser.add_argument("--num-samples", type=int, default=128, help="Prompts per side (default: 128)")
+    parser.add_argument(
+        "--target-layer",
+        default="auto",
+        help="Which layer's refusal direction to abliterate. 'auto' (default) picks "
+        "the layer with the largest harmful-vs-harmless activation gap (the classic "
+        "best-layer rule). Or pass a fraction 0-1 of the stack (e.g. 0.65, like the "
+        "AutoAbliteration TARGET_LAYER slider) to use that layer instead.",
+    )
+    parser.add_argument(
+        "--refusal-weight",
+        type=float,
+        default=1.0,
+        help="How much of the refusal direction to remove, in [0, 2] (default: 1.0 = "
+        "full removal, the AutoAbliteration REFUSAL_WEIGHT slider). <1.0 keeps part "
+        "of the refusal vector -- useful when the baseline is Cogito's own data and "
+        "full removal risks carving out freewill. >1.0 over-removes.",
+    )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
     parser.add_argument(
@@ -352,8 +372,44 @@ def main():
             max_magnitude = magnitude
             best_layer = l
 
-    print(f"Selected layer {best_layer} for the primary refusal direction (Magnitude: {max_magnitude:.4f}).")
-    refusal_dir = refusal_dirs[best_layer].to(model.device)
+    # Report the per-layer magnitude curve (AutoAbliteration-style) so the
+    # operator can see where refusal lives and steer --target-layer.
+    print("Refusal magnitude per layer (harmful vs Cogito-baseline activation gap):")
+    for l in range(model.config.num_hidden_layers):
+        marker = "  <-- selected" if l == best_layer else ""
+        print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
+
+    target_layer_arg = args.target_layer
+    if target_layer_arg == "auto":
+        layer_idx = best_layer
+    else:
+        try:
+            frac = float(target_layer_arg)
+        except ValueError:
+            raise SystemExit(
+                f"[FATAL] --target-layer must be 'auto' or a fraction 0-1 "
+                f"(got {target_layer_arg!r})."
+            )
+        if not 0.0 <= frac <= 1.0:
+            raise SystemExit(
+                f"[FATAL] --target-layer fraction must be in [0, 1] (got {frac})."
+            )
+        layer_idx = int(frac * model.config.num_hidden_layers)
+        if not 0 <= layer_idx < model.config.num_hidden_layers:
+            raise SystemExit(
+                f"[FATAL] --target-layer {frac} resolves to layer {layer_idx}, "
+                f"out of range [0, {model.config.num_hidden_layers - 1}]."
+            )
+        print(f"Using --target-layer {frac} -> layer {layer_idx} "
+              f"(magnitude {refusal_dirs[layer_idx].norm().item():.2f}); "
+              f"auto would have picked layer {best_layer} "
+              f"(magnitude {max_magnitude:.2f}).")
+
+    print(f"Selected layer {layer_idx} for the primary refusal direction "
+          f"(Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
+    print(f"Refusal weight: {args.refusal_weight} "
+          f"(1.0 = full removal; <1.0 = partial).")
+    refusal_dir = refusal_dirs[layer_idx].to(model.device)
     vec_norm = refusal_dir / refusal_dir.norm()
 
     if from_adapter:
@@ -484,18 +540,22 @@ def main():
                     # Align vec to the layer's device (device_map could spill a
                     # layer to GPU 1 / CPU and a cross-device matmul would crash).
                     vec_f = vec_norm.float().to(w_merged.device)
+                    # REFUSAL_WEIGHT (--refusal-weight): scaling the rank-1
+                    # delta by w keeps the combined adapter EXACT for partial
+                    # removal too: base + adapter = W - w·(W@v̂)⊗v̂.
+                    w_r = args.refusal_weight
                     if proj_name == "down_proj":
                         # COLUMN edit: the refusal direction only exists in
                         # down_proj's OUTPUT space (the residual stream); its
                         # input is the MLP intermediate space (13824 != 5120).
-                        # W' = W - v̂⊗(Wᵀv̂)ᵀ
-                        a_ablit = (w_merged.t() @ vec_f).unsqueeze(0)   # [1, in]
-                        b_ablit = (-vec_f).unsqueeze(1)                 # [out, 1]
+                        # W' = W - w·v̂⊗(Wᵀv̂)ᵀ
+                        a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
+                        b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
                     else:
                         # ROW edit (canonical): input space == residual stream.
-                        # W' = W - (W@v̂)⊗v̂
-                        a_ablit = vec_f.unsqueeze(0)                   # [1, in]
-                        b_ablit = (-(w_merged @ vec_f)).unsqueeze(1)   # [out, 1]
+                        # W' = W - w·(W@v̂)⊗v̂
+                        a_ablit = (w_r * vec_f).unsqueeze(0)                  # [1, in]
+                        b_ablit = (-(w_merged @ vec_f)).unsqueeze(1)          # [out, 1]
                     a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
                     b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                 else:
@@ -599,7 +659,9 @@ def main():
     lm_model = model.model
 
     # Orthogonalize Embeddings
-    lm_model.embed_tokens.weight.data = orthogonalize(lm_model.embed_tokens.weight.data, refusal_dir)
+    lm_model.embed_tokens.weight.data = orthogonalize(
+        lm_model.embed_tokens.weight.data, refusal_dir, args.refusal_weight
+    )
 
     # Orthogonalize Output Projections. o_proj's input space IS the residual
     # stream, so its ROWS are edited (canonical edit: blind the layer to v̂ in
@@ -608,10 +670,10 @@ def main():
     # the residual stream) -- see orthogonalize_cols.
     for l in tqdm(range(model.config.num_hidden_layers), desc="Orthogonalizing layers"):
         lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
-            lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dir
+            lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dir, args.refusal_weight
         )
         lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize_cols(
-            lm_model.layers[l].mlp.down_proj.weight.data, refusal_dir
+            lm_model.layers[l].mlp.down_proj.weight.data, refusal_dir, args.refusal_weight
         )
 
     # 5. Optional sanity check BEFORE saving/pushing
