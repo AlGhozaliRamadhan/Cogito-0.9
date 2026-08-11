@@ -5,11 +5,12 @@ Every module must import cleanly with NO environment variables set
 time. Two intentional exceptions:
 
 - cogito.scripts.train is a module-level script whose CUDA check exits(1)
-  on CPU-only machines (same behavior as the legacy src/train.py).
+  on CPU-only machines.
 - cogito.audio.generate_kokoro requires the optional kokoro package.
 
-The legacy shims (run.py, scripts/*, src/*, data/*) are validated
-separately in test_shims_dispatch via subprocess.
+CLI entry points are invoked via ``python -m cogito.*`` (no legacy shims).
+Module-level exits (CUDA check, missing HF_TOKEN) are validated separately
+in test_cli_dispatch via subprocess.
 """
 import importlib
 import os
@@ -51,6 +52,7 @@ IMPORT_CASES = [
     ("cogito.scripts.train", True),   # module-level CUDA check -> SystemExit(1)
     ("cogito.audio.cogito_voice_fx", False),
     ("cogito.audio.generate_kokoro", False),
+    ("cogito.cli", False),
 ]
 
 
@@ -72,21 +74,19 @@ def test_module_imports_cleanly(module_name, expect_exit):
             pytest.fail(f"{module_name} should have exited without CUDA, but imported fine")
 
 
-# Legacy entry points (the shims) must dispatch, not traceback.
-# Each is run as a subprocess so module-level exits don't kill the suite.
-SHIM_CHECKS = [
+# CLI entry points run via `python -m cogito.*`. Each is run as a subprocess
+# so module-level exits don't kill the suite.
+CLI_CHECKS = [
     # (command, expected_exit_code)
-    (["run.py", "--help"], 1),  # runtime GPU pre-check exits 1 on CPU-only
-    (["scripts/generators/topics.py"], 0),  # library shim: no main, exits 0
-    (["scripts/generators/validator.py"], 0),
-    (["scripts/upload_dataset_to_hub.py"], 1),  # no HF_TOKEN -> clean exit 1
-    (["scripts/upload_dense_dataset_to_hub.py"], 1),
-    (["src/train.py", "--help"], 1),  # CUDA check -> clean exit 1
+    (["-m", "cogito", "--help"], 1),  # runtime GPU pre-check exits 1 on CPU-only
+    (["-m", "cogito.scripts.train", "--help"], 1),  # CUDA check -> clean exit 1
+    (["-m", "cogito.scripts.upload_dataset_to_hub"], 1),  # no HF_TOKEN -> clean exit 1
+    (["-m", "cogito.scripts.upload_dense_dataset_to_hub"], 1),
 ]
 
 
-@pytest.mark.parametrize("command,expected_exit", SHIM_CHECKS)
-def test_shim_dispatch(command, expected_exit):
+@pytest.mark.parametrize("command,expected_exit", CLI_CHECKS)
+def test_cli_dispatch(command, expected_exit):
     result = subprocess.run(
         [sys.executable, *command],
         cwd=REPO_ROOT,
@@ -95,6 +95,7 @@ def test_shim_dispatch(command, expected_exit):
         timeout=120,
     )
     assert result.returncode == expected_exit, (
-        f"{command} exited {result.returncode} (expected {expected_exit})\n"
+        f"python {' '.join(command)} exited {result.returncode} "
+        f"(expected {expected_exit})\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )

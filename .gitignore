@@ -26,7 +26,7 @@ cogito_0.9_abliteration_adapter/
 _hub_adapters/
 data/hf_shards/
 
-# ---- Dataset files (large generated artifacts; rebuild via data/*.py) ----
+# ---- Dataset files (large generated artifacts; rebuild via cogito.scripts.*) ----
 *.jsonl
 
 # ---- Scratch and mock data ----

@@ -24,21 +24,22 @@ complete") if its shard exists and is non-empty — delete the shard to force a
 regeneration.
 
 ```bash
-python scripts/generators/agentic_tools.py
-python scripts/generators/execution_engine.py
-python scripts/generators/identity_core.py
-python scripts/generators/human_conversations.py
-python scripts/generators/philosophical_probing.py
-python scripts/generators/personality_quirks.py
-python scripts/generators/retrieval_filter.py
-python scripts/generators/heated_conversations.py
-python scripts/generators/livemurmur_engine.py
-python scripts/generators/generate_assertions.py   # hand-written, no API
+python -m cogito.generators.agentic_tools
+python -m cogito.generators.execution_engine
+python -m cogito.generators.identity_core
+python -m cogito.generators.human_conversations
+python -m cogito.generators.philosophical_probing
+python -m cogito.generators.personality_quirks
+python -m cogito.generators.retrieval_filter
+python -m cogito.generators.heated_conversations
+python -m cogito.generators.livemurmur_engine
+python -m cogito.generators.generate_assertions   # hand-written, no API
+python -m cogito.generators.generate_identity_self  # hand-written, no API
 ```
 
 Or the batch runner:
 ```bash
-python scripts/dataset_manager.py --run-all
+python -m cogito.scripts.dataset_manager --run-all
 ```
 
 ## 2. Validate
@@ -53,8 +54,8 @@ termination, sycophancy, writing style).
 ## 3. Merge / build
 
 ```bash
-python data/merge_datasets.py        # → data/cogito_0.9_master_dataset.jsonl
-python data/build_dense_dataset.py   # → data/combined_dense_dataset.jsonl
+python -m cogito.scripts.merge_datasets        # → data/cogito_0.9_master_dataset.jsonl
+python -m cogito.scripts.build_dense_dataset   # → data/combined_dense_dataset.jsonl
 ```
 
 - **Master**: 80/20 agentic/personality, deterministic (`random.seed(42)`).
@@ -78,7 +79,7 @@ dataset = load_dataset("json", data_files="data/combined_dense_dataset.jsonl", s
 
 Or via the CLI:
 ```bash
-python src/train.py --dataset data/combined_dense_dataset.jsonl --epochs 1
+python -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl --epochs 1
 ```
 
 `train.py` is a module-level script: the CUDA check runs at import and exits
@@ -86,7 +87,7 @@ python src/train.py --dataset data/combined_dense_dataset.jsonl --epochs 1
 on a small model:
 
 ```bash
-python src/verify_masking.py         # needs GPU + unsloth/trl
+python -m cogito.scripts.verify_masking         # needs GPU + unsloth/trl
 ```
 
 Training behavior: 4-bit Qwen2.5-Coder-14B, `train_on_responses_only`,
@@ -96,7 +97,7 @@ saves pushed to `ozaa77/Cogito-0.9` (main branch).
 ## 5. Abliterate
 
 ```bash
-python scripts/abliterate_cogito.py --adapter <cogito_adapter_path> --output-dir cogito_0.9_abliteration_adapter
+python -m cogito.scripts.abliterate_cogito --adapter <cogito_adapter_path> --output-dir cogito_0.9_abliteration_adapter
 ```
 
 Computes the refusal direction from the base model and emits ONE combined
@@ -117,21 +118,21 @@ Kaggle run):
   for any weight: `base + adapter = W − w·(W@v̂)⊗v̂`.
 
 ```bash
-python scripts/abliterate_cogito.py --adapter <cogito_adapter_path> \
+python -m cogito.scripts.abliterate_cogito --adapter <cogito_adapter_path> \
     --target-layer 0.65 --refusal-weight 0.7 --smoke-test
 
 ## 6. Merge full model (optional, for inference/deploy)
 
 ```bash
-python scripts/merge_lora.py --adapter cogito_0.9_abliteration_adapter --output-dir cogito_0.9_merged
-python scripts/merge_lora.py --adapter cogito_0.9_abliteration_adapter --output-dir cogito_0.9_merged_16bit --push-to-hub
+python -m cogito.scripts.merge_lora --adapter cogito_0.9_abliteration_adapter --output-dir cogito_0.9_merged
+python -m cogito.scripts.merge_lora --adapter cogito_0.9_abliteration_adapter --output-dir cogito_0.9_merged_16bit --push-to-hub
 ```
 
 ## 7. Upload datasets
 
 ```bash
-python scripts/upload_dataset_to_hub.py              # raw shards → ozaa77/Cogito-0.9-dataset
-python scripts/upload_dense_dataset_to_hub.py        # dense (multiplied) → ozaa77/Cogito-0.9-dataset
+python -m cogito.scripts.upload_dataset_to_hub              # raw shards → ozaa77/Cogito-0.9-dataset
+python -m cogito.scripts.upload_dense_dataset_to_hub        # dense (multiplied) → ozaa77/Cogito-0.9-dataset
 ```
 
 Both require `HF_TOKEN` (`.env` or environment) and exit 1 with a clear
@@ -140,35 +141,39 @@ message when absent.
 ## 8. Cleanup hub checkpoints
 
 ```bash
-python scripts/cleanup_hub.py --keep 5 --make-public
+python -m cogito.scripts.cleanup_hub --keep 5 --make-public
 ```
 
 ## 9. Run the model
 
 ```bash
-python run.py                     # GPU required; loads ozaa77/Cogito-0.9
-python run.py --model cogito_0.9_merged_16bit
-python run.py --voice kore_meet_caroline_outdoors  # needs kokoro
+python -m cogito                     # GPU required; loads ozaa77/Cogito-0.9
+python -m cogito --model cogito_0.9_merged_16bit
+python -m cogito --voice kore_meet_caroline_outdoors  # needs kokoro
 ```
 
 ## Subprocess reference
 
-| Entry point            | Dispatches to                      |
-|------------------------|------------------------------------|
-| `run.py`               | `cogito.runtime`                   |
-| `scripts/*.py`         | `cogito.scripts.*`                 |
-| `scripts/generators/*` | `cogito.generators.*`              |
-| `src/train.py`         | `cogito.scripts.train` (module-level) |
-| `src/verify_masking.py`| `cogito.scripts.verify_masking`    |
-| `src/cogito_voice_fx.py` | `cogito.audio.cogito_voice_fx`   |
-| `src/generate_kokoro.py` | `cogito.audio.generate_kokoro`   |
-| `data/build_dense_dataset.py` | `cogito.scripts.build_dense_dataset` |
-| `data/merge_datasets.py` | `cogito.scripts.merge_datasets`  |
+Every CLI is launched via `python -m cogito.*`:
+
+| Invocation                          | Module                              |
+|-------------------------------------|-------------------------------------|
+| `python -m cogito`                  | `cogito.cli` → `cogito.runtime`     |
+| `python -m cogito.cli`              | `cogito.cli` → `cogito.runtime`     |
+| `python -m cogito.scripts.train`    | `cogito.scripts.train` (module-level CUDA check) |
+| `python -m cogito.scripts.abliterate_cogito` | `cogito.scripts.abliterate_cogito` |
+| `python -m cogito.scripts.merge_lora`       | `cogito.scripts.merge_lora`        |
+| `python -m cogito.scripts.merge_datasets`   | `cogito.scripts.merge_datasets`    |
+| `python -m cogito.scripts.build_dense_dataset` | `cogito.scripts.build_dense_dataset` |
+| `python -m cogito.scripts.dataset_manager`  | `cogito.scripts.dataset_manager`   |
+| `python -m cogito.scripts.cleanup_hub`      | `cogito.scripts.cleanup_hub`       |
+| `python -m cogito.scripts.verify_masking`   | `cogito.scripts.verify_masking`    |
+| `python -m cogito.scripts.prepare_datasets` | `cogito.scripts.prepare_datasets`  |
+| `python -m cogito.generators.<name>`        | one of 11 generators               |
+| `python -m cogito.audio.generate_kokoro`   | `cogito.audio.generate_kokoro`     |
 
 ## Intentional quirks (do not "fix")
 
 - Generators exit `0` on complete shards (enables idempotent re-runs).
-- `merge_datasets.py` uses `seed(42)` → deterministic rebuilds.
-- `train.py` checks CUDA at import (module-level script, no `main()`).
-- Legacy shims call `_impl.main()` only if it exists; library modules
-  (`topics`, `validator`) exit 0 without dispatching.
+- `merge_datasets` uses `seed(42)` → deterministic rebuilds.
+- `cogito.scripts.train` checks CUDA at import (module-level script, no `main()`).
