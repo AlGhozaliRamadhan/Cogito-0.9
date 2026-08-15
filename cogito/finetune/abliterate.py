@@ -442,7 +442,8 @@ def main():
                     a_cog = torch.zeros(cog_r, in_f, dtype=torch.float16)
                     b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
-                if proj_name in ("o_proj", "down_proj"):
+                is_active_layer = refusal_dirs[l].norm().item() >= 0.20 * max_magnitude
+                if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
                     curr_dir = refusal_dirs[l]
@@ -544,17 +545,14 @@ def main():
     print("Orthogonalizing model weights (removing the refusal direction)...")
     lm_model = model.model
 
-    lm_model.embed_tokens.weight.data = orthogonalize(
-        lm_model.embed_tokens.weight.data, refusal_dir, args.refusal_weight
-    )
-
     for l in tqdm(range(model.config.num_hidden_layers), desc="Orthogonalizing layers"):
-        lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
-            lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dir, args.refusal_weight
-        )
-        lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize_cols(
-            lm_model.layers[l].mlp.down_proj.weight.data, refusal_dir, args.refusal_weight
-        )
+        if refusal_dirs[l].norm().item() >= 0.20 * max_magnitude:
+            lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
+                lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dirs[l], args.refusal_weight
+            )
+            lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize_cols(
+                lm_model.layers[l].mlp.down_proj.weight.data, refusal_dirs[l], args.refusal_weight
+            )
 
     if args.smoke_test:
         print("\n[SMOKE TEST] Generating one refusal probe and one persona probe ...")
