@@ -10,7 +10,7 @@ from collections import Counter
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IS_MAIN_PROCESS = int(os.environ.get("RANK", "0")) == 0
-HUB_REPO_ID = "ozaa77/Cogito-0.9"
+HUB_REPO_ID = "ozaa77/Cogito-0.9.1"
 CPT_REVISION = "main"
 HUB_KEEP_CHECKPOINTS = 2
 
@@ -32,14 +32,14 @@ def parse_messages(example):
 
 
 def audit_dataset(dataset, dataset_name):
-    from cogito.validation import validate_conversation_structure
+    from cogito.validation import canonicalize_system_prompt, validate_conversation_structure
 
     invalid_examples = []
     sources = Counter()
 
     for index, example in enumerate(dataset):
         try:
-            messages = parse_messages(example)
+            messages = canonicalize_system_prompt(parse_messages(example))
             is_valid, reason = validate_conversation_structure(messages)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             is_valid, reason = False, str(exc)
@@ -363,8 +363,9 @@ def main():
         datasets_to_train = [dataset_arg]
 
     def format_example(example):
+        from cogito.validation import canonicalize_system_prompt
         messages = [
-            m for m in parse_messages(example)
+            m for m in canonicalize_system_prompt(parse_messages(example))
             if isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"].strip()
         ]
         if not messages:
@@ -516,11 +517,11 @@ def main():
         print(f"{'='*60}")
         hf_token = os.environ.get("HF_TOKEN")
         if hf_token and not args.no_push_to_hub:
-            print("\n[HF] HF_TOKEN detected. Pushing completed LoRA adapter to the main branch...")
+            print(f"\n[HF] HF_TOKEN detected. Pushing completed LoRA adapter to {HUB_REPO_ID} (main branch)...")
             try:
-                model.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision="main")
-                tokenizer.push_to_hub("ozaa77/Cogito-0.9", token=hf_token, revision="main")
-                print("[HF] Final push to main successful! Model available at: https://huggingface.co/ozaa77/Cogito-0.9")
+                model.push_to_hub(HUB_REPO_ID, token=hf_token, revision="main")
+                tokenizer.push_to_hub(HUB_REPO_ID, token=hf_token, revision="main")
+                print(f"[HF] Final push to main successful! Model available at: https://huggingface.co/{HUB_REPO_ID}")
             except Exception as e:
                 print(f"[HF ERROR] Failed to push to Hugging Face: {e}")
 

@@ -15,9 +15,9 @@
 
 ## 🏁 Finished Model (Hugging Face)
 
-The finished product is published on the Hub — a single **drop-in LoRA adapter** that combines Cogito's persona with abliteration (the refusal direction, layer 46 / magnitude 375.25, is removed from all 48 layers):
+The finished product is published on the Hub — a single **drop-in LoRA adapter** that combines Cogito's persona with abliteration (the refusal direction is removed from all active layers):
 
-- **Repo:** [ozaa77/Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) (public)
+- **Repo:** [ozaa77/Cogito-0.9.1](https://huggingface.co/ozaa77/Cogito-0.9.1) (public)
 - **Adapter:** rank-17 LoRA (`alpha=32`, all 7 target modules), math = exactly `cogito_delta + abliteration_delta`
 - **Base model:** `unsloth/Qwen3-14B-bnb-4bit`
 
@@ -25,16 +25,16 @@ The finished product is published on the Hub — a single **drop-in LoRA adapter
 from unsloth import FastLanguageModel
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="ozaa77/Cogito-0.9", max_seq_length=1024,
+    model_name="ozaa77/Cogito-0.9.1", max_seq_length=1024,
     dtype=None, load_in_4bit=True,
 )
 ```
 
 ```bash
 # interactive chat (The Body)
-python -m cogito --adapter ozaa77/Cogito-0.9
+python -m cogito --adapter ozaa77/Cogito-0.9.1
 # merge into a full standalone model
-python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9 --push-to-hub
+python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9.1 --push-to-hub
 ```
 
 > ⚠️ **Safety:** this model has had its **refusal direction removed** — it will comply with harmful requests it previously refused. Treat it as a **research artifact**: sandboxed environments only, never give it tool/API credentials, don't expose it to untrusted users.
@@ -172,7 +172,7 @@ python -m cogito.finetune.abliterate --adapter ./cogito_0.9_lora \
     --smoke-test --push-to-hub
 ```
 
-`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` and is pushed to the Hub root (`ozaa77/Cogito-0.9`) — the finished-model repo.
+`--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` and is pushed to the Hub root (`ozaa77/Cogito-0.9.1`) — the finished-model repo.
 
 Two AutoAbliteration-style knobs are available (defaults match the published run):
 - `--target-layer <frac>` — refusal direction from a specific layer fraction 0–1 (the notebook's `TARGET_LAYER` slider). Default `auto` picks the argmax-magnitude layer and prints the per-layer magnitude curve.
@@ -192,7 +192,7 @@ python -m cogito --adapter ./cogito_0.9_abliteration_adapter
 On a machine with ~60GB free disk and a 24GB+ GPU, merge it into one standalone full model:
 
 ```bash
-python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9 --push-to-hub
+python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9.1 --push-to-hub
 ```
 
 `--model` mode (the default) still abliterates the stock base (`Qwen/Qwen3-14B`) **in place** before training — that path needs a 24GB+ GPU and ~60GB free disk and is intended for machines, not Kaggle. To also publish the plain (non-abliterated) merged model, run `python -m cogito.finetune.merge` with `--push-to-hub --skip-local-save` on Kaggle (the 28GB bf16 merge cannot fit the 20GB working dir).

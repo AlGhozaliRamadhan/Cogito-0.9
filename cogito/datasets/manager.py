@@ -155,11 +155,14 @@ def main():
             subprocess.run([sys.executable, merge_script])
             
         elif choice_idx == len(generators) + 3:
-            print("\n[*] Restoring from HuggingFace (ozaa77/Cogito-0.9-dataset)...")
+            print("\n[*] Restoring from HuggingFace (ozaa77/Cogito-0.9.1-dataset)...")
             try:
                 from datasets import load_dataset
                 import json
-                ds = load_dataset("parquet", data_files="hf://datasets/ozaa77/Cogito-0.9-dataset/**/*.parquet", split="train")
+                try:
+                    ds = load_dataset("parquet", data_files="hf://datasets/ozaa77/Cogito-0.9.1-dataset/**/*.parquet", split="train")
+                except Exception:
+                    ds = load_dataset("parquet", data_files="hf://datasets/ozaa77/Cogito-0.9-dataset/**/*.parquet", split="train")
                 restored_counts = {}
                 os.makedirs(os.path.join("data", "raw"), exist_ok=True)
                 

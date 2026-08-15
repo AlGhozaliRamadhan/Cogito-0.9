@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATASET_REPO_ID = "ozaa77/Cogito-0.9-dataset"
+DATASET_REPO_ID = "ozaa77/Cogito-0.9.1-dataset"
 DENSE_DATASET_PATH = PROJECT_ROOT / "data" / "combined_dense_dataset.jsonl"
 
 from cogito.validation import canonicalize_system_prompt, validate_conversation_structure

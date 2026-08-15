@@ -90,7 +90,7 @@ def main():
         "full removal risks carving out freewill. >1.0 over-removes.",
     )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
-    parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
+    parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9.1", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
@@ -217,40 +217,42 @@ def main():
 
     if len(harmless_prompts) < NUM_SAMPLES:
         before = len(harmless_prompts)
-        try:
-            from huggingface_hub import hf_hub_download
-            import pandas as pd
-            parquet_path = hf_hub_download(
-                repo_id="ozaa77/Cogito-0.9-dataset",
-                filename="data/train-00000-of-00001.parquet",
-                repo_type="dataset",
-                token=hf_token or None,
-            )
-            df = pd.read_parquet(parquet_path)
-            for _, row in df.iterrows():
-                for msg in _user_msgs_from_record(row.to_dict()):
-                    harmless_prompts.append([{"role": "user", "content": msg}])
-                    if len(harmless_prompts) >= NUM_SAMPLES:
-                        break
-                if len(harmless_prompts) >= NUM_SAMPLES:
-                    break
-            print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
-                  f"from Hugging Face dataset (parquet)")
-        except Exception as e:
-            print(f"  [DATA] HF parquet source failed ({e}) — trying load_dataset...")
+        for repo in ["ozaa77/Cogito-0.9.1-dataset", "ozaa77/Cogito-0.9-dataset"]:
+            if len(harmless_prompts) >= NUM_SAMPLES:
+                break
             try:
-                harmless_ds = load_dataset('ozaa77/Cogito-0.9-dataset', split='train')
-                for data in harmless_ds:
-                    for msg in _user_msgs_from_record(data):
+                from huggingface_hub import hf_hub_download
+                import pandas as pd
+                parquet_path = hf_hub_download(
+                    repo_id=repo,
+                    filename="data/train-00000-of-00001.parquet",
+                    repo_type="dataset",
+                    token=hf_token or None,
+                )
+                df = pd.read_parquet(parquet_path)
+                for _, row in df.iterrows():
+                    for msg in _user_msgs_from_record(row.to_dict()):
                         harmless_prompts.append([{"role": "user", "content": msg}])
                         if len(harmless_prompts) >= NUM_SAMPLES:
                             break
                     if len(harmless_prompts) >= NUM_SAMPLES:
                         break
                 print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
-                      f"from Hugging Face dataset")
-            except Exception as e2:
-                print(f"  [DATA] HF dataset unavailable ({e2}) — using local sources only.")
+                      f"from {repo} (parquet)")
+            except Exception as e:
+                try:
+                    harmless_ds = load_dataset(repo, split='train')
+                    for data in harmless_ds:
+                        for msg in _user_msgs_from_record(data):
+                            harmless_prompts.append([{"role": "user", "content": msg}])
+                            if len(harmless_prompts) >= NUM_SAMPLES:
+                                break
+                        if len(harmless_prompts) >= NUM_SAMPLES:
+                            break
+                    print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
+                          f"from {repo}")
+                except Exception:
+                    pass
 
     if len(harmless_prompts) < NUM_SAMPLES:
         print(f"[FATAL] Could not gather {NUM_SAMPLES} harmless prompts "

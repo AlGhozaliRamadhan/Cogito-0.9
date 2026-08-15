@@ -10,7 +10,7 @@ import argparse
 import os
 from huggingface_hub import HfApi, RepoFolder
 
-DEFAULT_REPO = "ozaa77/Cogito-0.9"
+DEFAULT_REPO = "ozaa77/Cogito-0.9.1"
 DEFAULT_KEEP = 2
 
 

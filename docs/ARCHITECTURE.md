@@ -69,7 +69,7 @@ Dependency rule: modules may import from `cogito` **only**, never from
 `python -m cogito [--model ...]` → `cogito.cli` → `cogito.runtime.main()`:
 
 1. GPU pre-check (exits 1 with a clear message on CPU-only machines).
-2. Loads the merged LoRA adapter (`ozaa77/Cogito-0.9` or a local path).
+2. Loads the merged LoRA adapter (`ozaa77/Cogito-0.9.1` or a local path).
 3. Chat loop with `COGITO_SYSTEM_PROMPT`, streaming generation,
    optional TTS via `--voice`.
 
@@ -102,7 +102,7 @@ and shuffling, so rebuilds are byte-identical given identical raw shards.
    `cogito.finetune.verify_masking`).
 3. `SFTTrainer` with gradient checkpointing, step checkpoints, and background upload queue.
 4. Every epoch: saves the LoRA adapter locally and pushes it to
-   `ozaa77/Cogito-0.9` (main branch), pruned by `cogito.datasets.cleanup_hub`.
+   `ozaa77/Cogito-0.9.1` (main branch), pruned by `cogito.datasets.cleanup_hub`.
 5. Final save + push.
 
 ## Abliteration & LoRA Merge flow

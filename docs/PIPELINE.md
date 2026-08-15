@@ -89,7 +89,7 @@ python -m cogito.finetune.verify_masking         # needs GPU + unsloth/trl
 
 Training behavior: 4-bit Qwen3-14B, `train_on_responses_only`,
 gradient checkpointing, per-epoch adapter saves pushed to
-`ozaa77/Cogito-0.9` (main branch).
+`ozaa77/Cogito-0.9.1` (main branch).
 
 ## 5. Abliterate
 
@@ -129,8 +129,8 @@ python -m cogito.finetune.merge --adapter cogito_0.9_abliteration_adapter --outp
 ## 7. Upload datasets
 
 ```bash
-python -m cogito.datasets.upload_hub              # raw shards → ozaa77/Cogito-0.9-dataset
-python -m cogito.datasets.upload_dense_hub        # dense (multiplied) → ozaa77/Cogito-0.9-dataset
+python -m cogito.datasets.upload_hub              # raw shards → ozaa77/Cogito-0.9.1-dataset
+python -m cogito.datasets.upload_dense_hub        # dense (multiplied) → ozaa77/Cogito-0.9.1-dataset
 ```
 
 Both require `HF_TOKEN` (`.env` or environment) and exit 1 with a clear
@@ -145,7 +145,7 @@ python -m cogito.datasets.cleanup_hub --keep 5 --make-public
 ## 9. Run the model
 
 ```bash
-python -m cogito                     # GPU required; loads ozaa77/Cogito-0.9
+python -m cogito                     # GPU required; loads ozaa77/Cogito-0.9.1
 python -m cogito --model cogito_0.9_merged_16bit
 python -m cogito --voice kore_meet_caroline_outdoors  # needs kokoro
 ```

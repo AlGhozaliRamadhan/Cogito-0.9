@@ -112,9 +112,9 @@ def main():
     )
     parser.add_argument(
         "--adapter",
-        default="ozaa77/Cogito-0.9",
+        default="ozaa77/Cogito-0.9.1",
         help="Local adapter dir, Hub repo id (auto-picks latest checkpoint-N), "
-        "or Hub repo id/subfolder (default: ozaa77/Cogito-0.9)",
+        "or Hub repo id/subfolder (default: ozaa77/Cogito-0.9.1)",
     )
     parser.add_argument(
         "--output-dir",
@@ -135,7 +135,7 @@ def main():
     )
     parser.add_argument(
         "--push-repo",
-        default="ozaa77/Cogito-0.9-merged",
+        default="ozaa77/Cogito-0.9.1-merged",
         help="Hub repo id to push the merged full model to",
     )
     parser.add_argument(

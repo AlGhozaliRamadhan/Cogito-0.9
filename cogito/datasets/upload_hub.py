@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATASET_REPO_ID = "ozaa77/Cogito-0.9-dataset"
+DATASET_REPO_ID = "ozaa77/Cogito-0.9.1-dataset"
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 
 SHARD_NAMES = [
