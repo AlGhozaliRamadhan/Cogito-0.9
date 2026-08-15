@@ -29,24 +29,36 @@ def collect_checkpoint_steps(api, repo_id, token):
     return sorted(steps)
 
 
-def delete_checkpoint(api, repo_id, step, token):
-    print(f"[HUB] Deleting checkpoint-{step} ...")
+def delete_checkpoint(api, repo_id, step, token, timeout: float = 20.0):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+    def _do_delete():
+        print(f"[HUB] Deleting checkpoint-{step} ...")
+        try:
+            api.delete_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                path_in_repo=f"checkpoint-{step}",
+                revision="main",
+                token=token,
+            )
+        except TypeError:
+            api.delete_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                folder_path=f"checkpoint-{step}",
+                revision="main",
+                token=token,
+            )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_do_delete)
     try:
-        api.delete_folder(
-            repo_id=repo_id,
-            repo_type="model",
-            path_in_repo=f"checkpoint-{step}",
-            revision="main",
-            token=token,
-        )
-    except TypeError:
-        api.delete_folder(
-            repo_id=repo_id,
-            repo_type="model",
-            folder_path=f"checkpoint-{step}",
-            revision="main",
-            token=token,
-        )
+        future.result(timeout=timeout)
+    except TimeoutError:
+        print(f"[HUB] Deletion of checkpoint-{step} timed out after {timeout}s (non-fatal).")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def main():

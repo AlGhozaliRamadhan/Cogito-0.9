@@ -72,11 +72,12 @@ def audit_dataset(dataset, dataset_name):
     )
 
 
-def _prune_old_hub_checkpoints(hf_token: str):
+def _prune_old_hub_checkpoints(hf_token: str, timeout: float = 20.0):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
     from huggingface_hub import HfApi, RepoFolder
 
-    try:
-        api = HfApi()
+    def _do_prune():
+        api = HfApi(token=hf_token)
         entries = api.list_repo_tree(
             repo_id=HUB_REPO_ID,
             revision=CPT_REVISION,
@@ -113,18 +114,33 @@ def _prune_old_hub_checkpoints(hf_token: str):
                     revision=CPT_REVISION,
                     token=hf_token,
                 )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_do_prune)
+    try:
+        future.result(timeout=timeout)
+    except TimeoutError:
+        print(f"[HF] Checkpoint pruning timed out after {timeout}s (non-fatal); moving on.")
     except Exception as exc:
         print(f"[HF] Prune checkpoints failed (non-fatal): {exc}")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _checkpoint_upload_worker(hf_token: str):
     from huggingface_hub import upload_folder
 
-    while True:
-        ckpt_dir = _checkpoint_upload_queue.get()
+    while not _checkpoint_upload_stop.is_set():
         try:
-            if ckpt_dir is None or _checkpoint_upload_stop.is_set():
-                return
+            ckpt_dir = _checkpoint_upload_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
+        if ckpt_dir is None:
+            _checkpoint_upload_queue.task_done()
+            break
+
+        try:
             step = int(os.path.basename(ckpt_dir).split("-")[-1])
             print(f"\n[HF] Pushing checkpoint {step} to '{CPT_REVISION}'...")
             upload_folder(
@@ -136,16 +152,29 @@ def _checkpoint_upload_worker(hf_token: str):
                 token=hf_token,
             )
             print(f"[HF] Checkpoint {step} pushed to '{CPT_REVISION}'.")
-            _prune_old_hub_checkpoints(hf_token)
         except Exception as exc:
             print(f"[HF ERROR] Failed to push checkpoint to Hub: {exc}")
+
+        try:
+            _prune_old_hub_checkpoints(hf_token, timeout=20.0)
+        except Exception as exc:
+            print(f"[HF] Prune call failed (non-fatal): {exc}")
         finally:
             _checkpoint_upload_queue.task_done()
 
 
-def _flush_checkpoint_uploads():
-    if _checkpoint_upload_thread is not None:
-        _checkpoint_upload_queue.join()
+def _flush_checkpoint_uploads(timeout: float = 60.0):
+    global _checkpoint_upload_thread
+    if _checkpoint_upload_thread is None or not _checkpoint_upload_thread.is_alive():
+        return
+    print("\n[HF] Flushing pending background checkpoint uploads (max 60s)...")
+    _checkpoint_upload_queue.put(None)
+    _checkpoint_upload_thread.join(timeout=timeout)
+    if _checkpoint_upload_thread.is_alive():
+        print(f"[HF] Warning: Background upload thread active after {timeout}s; continuing.")
+        _checkpoint_upload_stop.set()
+    else:
+        print("[HF] All background checkpoint uploads finished cleanly.")
 
 
 def find_latest_local_checkpoint(root: str) -> str | None:
