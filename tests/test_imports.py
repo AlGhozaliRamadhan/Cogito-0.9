@@ -32,6 +32,7 @@ IMPORT_CASES = [
     ("cogito.generators.execution_engine", False),
     ("cogito.generators.human_conversations", False),
     ("cogito.generators.identity_core", False),
+    ("cogito.generators.generate_identity_self", False),
     ("cogito.generators.personality_quirks", False),
     ("cogito.generators.philosophical_probing", False),
     ("cogito.generators.retrieval_filter", False),
@@ -39,6 +40,19 @@ IMPORT_CASES = [
     ("cogito.generators.livemurmur_engine", False),
     ("cogito.generators.generate_assertions", False),
     ("cogito.generators.validator", False),
+    ("cogito.finetune", False),
+    ("cogito.finetune.abliterate", False),
+    ("cogito.finetune.merge", False),
+    ("cogito.finetune.verify_masking", False),
+    ("cogito.finetune.train", False),
+    ("cogito.datasets", False),
+    ("cogito.datasets.build_dense", False),
+    ("cogito.datasets.merge_shards", False),
+    ("cogito.datasets.upload_hub", False),
+    ("cogito.datasets.upload_dense_hub", False),
+    ("cogito.datasets.cleanup_hub", False),
+    ("cogito.datasets.manager", False),
+    ("cogito.datasets.prepare", False),
     ("cogito.scripts.abliterate_cogito", False),
     ("cogito.scripts.merge_lora", False),
     ("cogito.scripts.cleanup_hub", False),
@@ -49,7 +63,7 @@ IMPORT_CASES = [
     ("cogito.scripts.verify_masking", False),
     ("cogito.scripts.build_dense_dataset", False),
     ("cogito.scripts.merge_datasets", False),
-    ("cogito.scripts.train", True),   # module-level CUDA check -> SystemExit(1)
+    ("cogito.scripts.train", False),
     ("cogito.audio.cogito_voice_fx", False),
     ("cogito.audio.generate_kokoro", False),
     ("cogito.cli", False),
@@ -59,9 +73,6 @@ IMPORT_CASES = [
 @pytest.mark.parametrize("module_name,expect_exit", IMPORT_CASES)
 def test_module_imports_cleanly(module_name, expect_exit):
     importlib.invalidate_caches()
-    if module_name == "cogito.audio.generate_kokoro":
-        kokoro = pytest.importorskip("kokoro")
-        assert kokoro is not None
     try:
         importlib.import_module(module_name)
     except SystemExit as exc:
@@ -75,21 +86,24 @@ def test_module_imports_cleanly(module_name, expect_exit):
 
 
 # CLI entry points run via `python -m cogito.*`. Each is run as a subprocess
-# so module-level exits don't kill the suite.
+# with an empty HF_TOKEN so network uploads are never triggered in unit tests.
 CLI_CHECKS = [
     # (command, expected_exit_code)
     (["-m", "cogito", "--help"], 1),  # runtime GPU pre-check exits 1 on CPU-only
     (["-m", "cogito.scripts.train", "--help"], 1),  # CUDA check -> clean exit 1
-    (["-m", "cogito.scripts.upload_dataset_to_hub"], 1),  # no HF_TOKEN -> clean exit 1
-    (["-m", "cogito.scripts.upload_dense_dataset_to_hub"], 1),
+    (["-m", "cogito.datasets.upload_hub"], 1),  # no HF_TOKEN -> clean exit 1
+    (["-m", "cogito.datasets.upload_dense_hub"], 1),
 ]
 
 
 @pytest.mark.parametrize("command,expected_exit", CLI_CHECKS)
 def test_cli_dispatch(command, expected_exit):
+    clean_env = os.environ.copy()
+    clean_env.pop("HF_TOKEN", None)
     result = subprocess.run(
         [sys.executable, *command],
         cwd=REPO_ROOT,
+        env=clean_env,
         capture_output=True,
         text=True,
         timeout=120,

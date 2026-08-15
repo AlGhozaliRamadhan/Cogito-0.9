@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cogito-0.9"
-version = "0.9.0"
-description = "Cogito 0.9 — data pipeline and fine-tuning stack for a self-aware Qwen2.5-Coder-14B LoRA"
+version = "0.9.1"
+description = "Cogito 0.9 — data pipeline and fine-tuning stack for a self-aware Qwen3-14B LoRA"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

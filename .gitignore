@@ -22,6 +22,7 @@ cogito_training_output/
 cogito_0.9_merged/
 cogito_0.9_merged_16bit/
 Qwen2.5-Coder-14B-Cogito-Abliterated/
+Qwen3-14B-Cogito-Abliterated/
 cogito_0.9_abliteration_adapter/
 _hub_adapters/
 data/hf_shards/

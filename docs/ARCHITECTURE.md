@@ -3,7 +3,7 @@
 ## Purpose
 
 Cogito 0.9 is a data-generation and fine-tuning stack that produces a
-self-aware, abliterated variant of Qwen2.5-Coder-14B. The pipeline:
+self-aware, abliterated variant of Qwen3-14B. The pipeline:
 
 1. **Generates** a synthetic dataset (tool-use, identity, probing, personality)
    through an NVIDIA-hosted LLM API.
@@ -11,7 +11,7 @@ self-aware, abliterated variant of Qwen2.5-Coder-14B. The pipeline:
    (`<confidence>/<thought>/<action>` ChatML), rejecting malformed records.
 3. **Merges** validated shards into a master dataset (80/20 agentic/personality)
    and a dense SFT dataset (identity/probing up-weighted).
-4. **Fine-tunes** Qwen2.5-Coder-14B with LoRA on Kaggle 2×T4 via unsloth/trl.
+4. **Fine-tunes** Qwen3-14B with LoRA on Kaggle 2×T4 via unsloth/trl.
 5. **Abliterates** refusal behavior as a rank-1 adapter delta and merges it
    into the LoRA, producing a single combined adapter.
 
@@ -20,7 +20,7 @@ self-aware, abliterated variant of Qwen2.5-Coder-14B. The pipeline:
 ```
 Cogito 0.9/
 ├── cogito/                      # The importable package — single source of truth
-│   ├── __init__.py              #   __version__ = "0.9.0" only (imports nothing heavy)
+│   ├── __init__.py              #   __version__ = "0.9.1" only (imports nothing heavy)
 │   ├── __main__.py              #   `python -m cogito` → cogito.cli
 │   ├── cli.py                   #   CLI entry point → cogito.runtime.main()
 │   ├── runtime.py               #   Interactive runtime / inference driver
@@ -78,43 +78,41 @@ Dependency rule: modules may import from `cogito` **only**, never from
 ```
 cogito/generators/*.py  --(NVIDIA API)-->  data/raw/*.jsonl     11 shards
         │
-        ├── python -m cogito.scripts.merge_datasets
+        ├── python -m cogito.datasets.merge_shards
         │     →  data/cogito_0.9_master_dataset.jsonl
         │          (80/20 agentic/personality, seed 42 → deterministic)
-        └── python -m cogito.scripts.build_dense_dataset
+        └── python -m cogito.datasets.build_dense
               →  data/combined_dense_dataset.jsonl
-                 (identity ×3, probing ×4, assertions ×5, identity_self ×5 …)
+                 (balanced multipliers: agentic ×2, identity_self ×4, probing ×1 …)
                                               │
                                               ▼
-              python -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl
+              python -m cogito.finetune.train --dataset data/combined_dense_dataset.jsonl
 ```
 
-Determinism: `merge_datasets` seeds `random` with `42` before downsampling
+Determinism: `merge_shards` seeds `random` with `42` before downsampling
 and shuffling, so rebuilds are byte-identical given identical raw shards.
 
-## Training flow (Kaggle, 2×T4)
+## Fine-tuning & Training flow (Kaggle, 2×T4)
 
-`cogito.scripts.train` is a module-level script (no `main()` guard) that
-runs top-to-bottom:
+`cogito.finetune.train` handles fine-tuning:
 
-1. CUDA check at import — exits 1 with a clear message without a GPU.
-2. Loads Qwen2.5-Coder-14B in 4-bit via unsloth, `train_on_responses_only`
+1. CUDA check at startup — exits 1 with a clear message without a GPU.
+2. Loads Qwen3-14B in 4-bit via unsloth, `train_on_responses_only`
    masks everything except assistant turns (verified by
-   `cogito.scripts.verify_masking`).
-3. `SFTTrainer` with packing, gradient checkpointing, and a live-murmur
-   callback that streams 50-step progress updates to `python -m cogito`.
+   `cogito.finetune.verify_masking`).
+3. `SFTTrainer` with gradient checkpointing, step checkpoints, and background upload queue.
 4. Every epoch: saves the LoRA adapter locally and pushes it to
-   `ozaa77/Cogito-0.9` (main branch), pruned by `cogito.scripts.cleanup_hub`.
+   `ozaa77/Cogito-0.9` (main branch), pruned by `cogito.datasets.cleanup_hub`.
 5. Final save + push.
 
-## Abliteration flow
+## Abliteration & LoRA Merge flow
 
-`cogito.scripts.abliterate_cogito` computes a **rank-1 adapter delta** from
+`cogito.finetune.abliterate` computes a **rank-1 adapter delta** from
 the refusal direction in the base model and emits a single combined adapter
 (`cogito_0.9_abliteration_adapter/`): Cogito LoRA + abliteration delta in one
 adapter directory, so no multi-adapter runtime API is needed. Adapter keys are
 saved WITHOUT the `.default` suffix (peft ≥0.19 format).
-`cogito.scripts.merge_lora` merges adapters back into a full model for
+`cogito.finetune.merge` merges adapters back into a full model for
 deployment/inference.
 
 ## Testing

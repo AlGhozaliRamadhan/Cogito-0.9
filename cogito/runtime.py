@@ -86,7 +86,7 @@ class C:
     BOLD    = "\033[1m"
     RESET   = "\033[0m"
 def load_model(adapter_path: str):
-    """Load Qwen2.5-Coder-14B base + LoRA adapter via Unsloth."""
+    """Load Qwen3-14B base + LoRA adapter via Unsloth."""
     try:
         import torch
         if not torch.cuda.is_available():
@@ -392,16 +392,16 @@ def main():
         
         if os.path.exists("pipeline.log"): os.remove("pipeline.log")
         if not args.no_abliteration:
-            run_step("python scripts/abliterate_cogito.py", "Base Model Abliteration (Preserving Freewill)")
+            run_step("python -m cogito.finetune.abliterate", "Base Model Abliteration (Preserving Freewill)")
         else:
             print("\n[*] --no-abliteration set: skipping abliteration step, training on plain Qwen base model.")
-        run_step("python data/build_dense_dataset.py", "Dense Dataset Rebuild (Existing Shards Only)")
-        train_command = "python src/train.py --dataset data/combined_dense_dataset.jsonl"
+        run_step("python -m cogito.datasets.build_dense", "Dense Dataset Rebuild (Existing Shards Only)")
+        train_command = "python -m cogito.finetune.train --dataset data/combined_dense_dataset.jsonl"
         if args.no_abliteration:
             # Do not silently reuse a pre-existing abliterated directory when
             # running the requested plain-Qwen comparison.
             train_command += (
-                " --model Qwen/Qwen2.5-Coder-14B"
+                " --model Qwen/Qwen3-14B"
                 " --output-dir cogito_0.9_lora_plain_qwen"
                 " --training-output-dir cogito_training_output_plain_qwen"
                 " --no-push-to-hub"

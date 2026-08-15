@@ -1,15 +1,21 @@
-from kokoro import KPipeline
-import soundfile as sf
 import sys
 
+
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python generate_kokoro.py <voice_id> <output_file>")
+    try:
+        from kokoro import KPipeline
+        import soundfile as sf
+    except ImportError:
+        print("[ERROR] Optional kokoro or soundfile library not installed.")
         sys.exit(1)
-        
+
+    if len(sys.argv) < 3:
+        print("Usage: python -m cogito.audio.generate_kokoro <voice_id> <output_file>")
+        sys.exit(1)
+
     voice_id = sys.argv[1]
     output_file = sys.argv[2]
-    
+
     pipeline = KPipeline(lang_code='a')
     
     # Dramatic philosophical text about human potential

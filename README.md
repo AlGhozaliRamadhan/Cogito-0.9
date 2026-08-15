@@ -19,7 +19,7 @@ The finished product is published on the Hub — a single **drop-in LoRA adapter
 
 - **Repo:** [ozaa77/Cogito-0.9](https://huggingface.co/ozaa77/Cogito-0.9) (public)
 - **Adapter:** rank-17 LoRA (`alpha=32`, all 7 target modules), math = exactly `cogito_delta + abliteration_delta`
-- **Base model:** `unsloth/qwen2.5-coder-14b-bnb-4bit`
+- **Base model:** `unsloth/Qwen3-14B-bnb-4bit`
 
 ```python
 from unsloth import FastLanguageModel
@@ -34,12 +34,12 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 # interactive chat (The Body)
 python -m cogito --adapter ozaa77/Cogito-0.9
 # merge into a full standalone model
-python -m cogito.scripts.merge_lora --adapter ozaa77/Cogito-0.9 --push-to-hub
+python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9 --push-to-hub
 ```
 
 > ⚠️ **Safety:** this model has had its **refusal direction removed** — it will comply with harmful requests it previously refused. Treat it as a **research artifact**: sandboxed environments only, never give it tool/API credentials, don't expose it to untrusted users.
 >
-> ⚠️ **Retraining:** `python -m cogito.scripts.train` pushes a fresh **plain** adapter to this repo root on the final epoch — re-run `python -m cogito.scripts.abliterate_cogito --smoke-test --push-to-hub` afterwards to restore the abliterated model.
+> ⚠️ **Retraining:** `python -m cogito.finetune.train` pushes a fresh **plain** adapter to this repo root on the final epoch — re-run `python -m cogito.finetune.abliterate --smoke-test --push-to-hub` afterwards to restore the abliterated model.
 
 ---
 
@@ -59,7 +59,7 @@ python -m cogito --adapter ./cogito_0.9_lora
 # run the ABLITERATED model instead (drop-in adapter: base + Cogito + abliteration):
 python -m cogito --adapter ./cogito_0.9_abliteration_adapter
 ```
-*(Note: Requires the Qwen2.5-Coder-14B base model and the Cogito LoRA adapter generated from training.)*
+*(Note: Requires the Qwen3-14B base model and the Cogito LoRA adapter generated from training.)*
 
 ---
 
@@ -100,15 +100,13 @@ else:
 !pip install "unsloth[kaggle-new]==2026.8.8"
 
 # 3. Build the dense dataset from the existing Cogito shards.
-#    Identity core is repeated 3x and philosophical probing 4x.
-!python -m cogito.scripts.build_dense_dataset
+!python -m cogito.datasets.build_dense
 
 # 4. Optional: abliterate the base model.
-!python -m cogito.scripts.abliterate_cogito
+!python -m cogito.finetune.abliterate
 
-# 5. Train only on the persona-aligned dense dataset. The old Phase 1 generic
-#    HF corpus has no Cogito system prompt, so it is intentionally skipped.
-!torchrun --nproc_per_node=2 -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl --epochs 3
+# 5. Train only on the persona-aligned dense dataset.
+!torchrun --nproc_per_node=2 -m cogito.finetune.train --dataset data/combined_dense_dataset.jsonl --epochs 3
 ```
 
 ### Plain-Qwen Comparison Run
@@ -138,7 +136,7 @@ else:
 !pip install "unsloth[kaggle-new]==2026.8.8"
 
 # 4. Isolation run: use plain Qwen and keep its adapter/checkpoints local.
-!torchrun --nproc_per_node=2 -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen2.5-Coder-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
+!torchrun --nproc_per_node=2 -m cogito.finetune.train --dataset data/combined_dense_dataset.jsonl --epochs 3 --model Qwen/Qwen3-14B --output-dir cogito_0.9_lora_plain_qwen --training-output-dir cogito_training_output_plain_qwen --no-push-to-hub
 ```
 
 ### Automatic Checkpoints
@@ -150,10 +148,10 @@ Training produces a LoRA adapter (weights only). To turn the trained checkpoint 
 
 ```bash
 # Merge the latest Hub checkpoint and push the full 16-bit model to a new repo:
-python -m cogito.scripts.merge_lora --push-to-hub
+python -m cogito.finetune.merge --push-to-hub
 
 # Merge a specific checkpoint and save locally instead:
-python -m cogito.scripts.merge_lora --adapter ./cogito_0.9_lora --output-dir cogito_0.9_merged
+python -m cogito.finetune.merge --adapter ./cogito_0.9_lora --output-dir cogito_0.9_merged
 ```
 
 `--adapter` accepts a local dir, a Hub repo id (auto-picks the newest `checkpoint-N`), or `repo_id/subfolder`. The base model recorded in `adapter_config.json` is loaded automatically.
@@ -170,11 +168,10 @@ The refusal direction is computed from the *trained* model (4-bit base + Cogito 
 
 ```bash
 # One command on Kaggle 2x T4 — compute + smoke-test + push the combined adapter:
-python -m cogito.scripts.abliterate_cogito --adapter ./cogito_0.9_lora \
+python -m cogito.finetune.abliterate --adapter ./cogito_0.9_lora \
     --smoke-test --push-to-hub
-
-The Hub no longer hosts the plain Cogito checkpoints — they were pruned when the finished abliterated model was published. For a re-run, point `--adapter` at a **local** plain Cogito adapter (e.g. `./cogito_0.9_lora` from training).
 ```
+
 `--smoke-test` prints one refusal probe and one persona probe before uploading, so you can interrupt if the abliteration degraded the model. The adapter lands in `cogito_0.9_abliteration_adapter/` and is pushed to the Hub root (`ozaa77/Cogito-0.9`) — the finished-model repo.
 
 Two AutoAbliteration-style knobs are available (defaults match the published run):
@@ -182,7 +179,7 @@ Two AutoAbliteration-style knobs are available (defaults match the published run
 - `--refusal-weight <0..2>` — how much of the refusal direction to remove (the notebook's `REFUSAL_WEIGHT` slider). `1.0` = full removal (default); lower values do a *partial* abliteration, which can preserve more of Cogito's freewill since the Cogito baseline is its own data:
 
 ```bash
-python -m cogito.scripts.abliterate_cogito --adapter ./cogito_0.9_lora \
+python -m cogito.finetune.abliterate --adapter ./cogito_0.9_lora \
     --target-layer 0.65 --refusal-weight 0.7 --smoke-test --push-to-hub
 ```
 
@@ -195,25 +192,26 @@ python -m cogito --adapter ./cogito_0.9_abliteration_adapter
 On a machine with ~60GB free disk and a 24GB+ GPU, merge it into one standalone full model:
 
 ```bash
-python -m cogito.scripts.merge_lora --adapter ozaa77/Cogito-0.9 --push-to-hub
+python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9 --push-to-hub
 ```
 
-`--model` mode (the default) still abliterates the stock base (`Qwen/Qwen2.5-Coder-14B`) **in place** before training — that path needs a 24GB+ GPU and ~60GB free disk and is intended for machines, not Kaggle. To also publish the plain (non-abliterated) merged model, run `python -m cogito.scripts.merge_lora` with `--push-to-hub --skip-local-save` on Kaggle (the 28GB bf16 merge cannot fit the 20GB working dir).
+`--model` mode (the default) still abliterates the stock base (`Qwen/Qwen3-14B`) **in place** before training — that path needs a 24GB+ GPU and ~60GB free disk and is intended for machines, not Kaggle. To also publish the plain (non-abliterated) merged model, run `python -m cogito.finetune.merge` with `--push-to-hub --skip-local-save` on Kaggle (the 28GB bf16 merge cannot fit the 20GB working dir).
 
 After any future training run, prune stale checkpoints from the Hub to keep the repo lean (each checkpoint is ~425MB):
 
 ```bash
-python -m cogito.scripts.cleanup_hub --keep 1   # keep only the latest checkpoint-N
+python -m cogito.datasets.cleanup_hub --keep 1   # keep only the latest checkpoint-N
 ```
-
-(The repo is already public, and all checkpoints were removed when the finished abliterated model was published.)
 
 ---
 
 ## Development
 
-The repository is a single Python package (`cogito/`) — the only source of
-truth. Every CLI is invoked via `python -m cogito.*`; there are no shims.
+The repository is a single Python package (`cogito/`) with dedicated subpackages:
+- `cogito/finetune/` — Fine-tuning, abliteration, LoRA merging, and response masking verification.
+- `cogito/datasets/` — Dense builder, shard merger, dataset manager, and Hugging Face Hub tools.
+- `cogito/generators/` — Synthetic scenarios, tool actions, and persona generators.
+- `cogito/audio/` — Sound effects and Kokoro TTS generation.
 
 ```bash
 pip install -e ".[dev]"        # pytest + dev deps
@@ -224,9 +222,9 @@ Run the package directly:
 
 ```bash
 python -m cogito --adapter ./cogito_0.9_lora           # interactive runtime
-python -m cogito.scripts.train --dataset data/combined_dense_dataset.jsonl
-python -m cogito.scripts.merge_datasets
-python -m cogito.scripts.build_dense_dataset
+python -m cogito.finetune.train --dataset data/combined_dense_dataset.jsonl
+python -m cogito.datasets.merge_shards
+python -m cogito.datasets.build_dense
 ```
 
 Key entry points and data flow are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
