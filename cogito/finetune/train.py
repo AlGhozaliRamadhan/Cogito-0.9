@@ -141,6 +141,8 @@ def _checkpoint_upload_worker(hf_token: str):
             break
 
         try:
+            import time
+            time.sleep(0.1)
             step = int(os.path.basename(ckpt_dir).split("-")[-1])
             print(f"\n[HF] Pushing checkpoint {step} to '{CPT_REVISION}'...")
             upload_folder(
@@ -434,8 +436,6 @@ def main():
 
     class SaveAtEpochEndCallback(TrainerCallback):
         def on_epoch_end(self, callback_args, state, control, **kwargs):
-            if not IS_MAIN_PROCESS:
-                return control
             control.should_save = True
             return control
 
@@ -465,6 +465,7 @@ def main():
         seed=42,
         dataloader_pin_memory=True,
         ddp_find_unused_parameters=False,
+        ddp_timeout=7200,
         push_to_hub=False,
         max_seq_length=max_seq_length,
         dataset_text_field="text",
