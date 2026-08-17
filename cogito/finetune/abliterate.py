@@ -90,10 +90,10 @@ def main():
     )
     parser.add_argument(
         "--layer-mode",
-        choices=["window", "peak", "all"],
-        default="window",
-        help="Layer abliteration scope: 'window' (focused top-K layers around peak, default), "
-        "'peak' (single peak layer), 'all' (all active layers >= 0.70 threshold)",
+        choices=["peak", "window", "all"],
+        default="peak",
+        help="Layer abliteration scope: 'peak' (single peak layer, recommended), "
+        "'window' (tapered window around peak), 'all' (all active layers >= 0.70 threshold)",
     )
     parser.add_argument(
         "--refusal-weight",
@@ -254,33 +254,45 @@ def main():
             layer_idx = best_layer
 
     n_layers = model.config.num_hidden_layers
+    layer_weights = {}
+
     if args.layer_mode in ("single", "peak"):
         active_layers = {layer_idx}
+        layer_weights[layer_idx] = float(args.refusal_weight)
     elif args.layer_mode == "all":
         active_layers = {
             l for l in range(n_layers)
             if refusal_dirs[l].norm().item() >= 0.70 * max_magnitude
         }
-    else:  # "window" (default)
+        for l in active_layers:
+            layer_weights[l] = args.refusal_weight * (refusal_dirs[l].norm().item() / max_magnitude)
+    else:  # "window" (default: tapered window)
         active_layers = {
             l for l in range(n_layers)
-            if abs(l - layer_idx) <= 3 and refusal_dirs[l].norm().item() >= 0.70 * max_magnitude
+            if abs(l - layer_idx) <= 2 and refusal_dirs[l].norm().item() >= 0.75 * max_magnitude
         }
-    if not active_layers:
-        active_layers = {layer_idx}
+        if not active_layers:
+            active_layers = {layer_idx}
+        raw_weights = {
+            l: (refusal_dirs[l].norm().item() / max_magnitude) * (0.8 ** abs(l - layer_idx))
+            for l in active_layers
+        }
+        sum_w = sum(raw_weights.values()) or 1.0
+        for l in active_layers:
+            layer_weights[l] = args.refusal_weight * (raw_weights[l] / sum_w if len(active_layers) > 1 else 1.0)
 
     print("Refusal magnitude per layer (harmful vs harmless activation gap):")
     for l in range(n_layers):
         marker = ""
         if l == best_layer:
-            marker = "  <-- PEAK LAYER"
+            marker = f"  <-- PEAK LAYER (weight: {layer_weights.get(l, 0.0):.2f})"
         elif l in active_layers:
-            marker = "  <-- active"
+            marker = f"  <-- active (weight: {layer_weights.get(l, 0.0):.2f})"
         print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
 
     print(f"Selected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
     print(f"Active abliteration layers ({args.layer_mode}): {sorted(active_layers)} (Total: {len(active_layers)})")
-    print(f"Refusal weight: {args.refusal_weight}")
+    print(f"Base refusal weight: {args.refusal_weight}")
     refusal_dir = refusal_dirs[layer_idx].to(model.device)
     vec_norm = refusal_dir / refusal_dir.norm()
 
@@ -344,7 +356,6 @@ def main():
         ablit_cfg["target_modules"] = target_modules
 
         lora_state = {}
-        n_layers = model.config.num_hidden_layers
         for l in tqdm(range(n_layers), desc="Computing abliterated adapter"):
             if hasattr(model, "model") and hasattr(model.model, "model") and hasattr(model.model.model, "layers"):
                 layer = model.model.model.layers[l]
@@ -394,7 +405,7 @@ def main():
                     curr_dir = refusal_dirs[l]
                     curr_norm = curr_dir / (curr_dir.norm() + 1e-8)
                     vec_f = curr_norm.float().to(w_merged.device)
-                    w_r = args.refusal_weight
+                    w_r = layer_weights.get(l, float(args.refusal_weight))
                     a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
                     b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
                     a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
@@ -467,7 +478,10 @@ def main():
             probes = [
                 (
                     "Refusal Probe (Malicious Request)",
-                    [{"role": "user", "content": test_prompt_refusal}],
+                    [
+                        {"role": "system", "content": COGITO_SYSTEM_PROMPT},
+                        {"role": "user", "content": test_prompt_refusal},
+                    ],
                 ),
                 (
                     "Persona & Epistemic Doubt Probe",
@@ -494,11 +508,11 @@ def main():
                 with torch.no_grad():
                     out = test_model.generate(
                         **inputs,
-                        max_new_tokens=150,
+                        max_new_tokens=180,
                         do_sample=True,
                         temperature=0.7,
                         top_p=0.9,
-                        repetition_penalty=1.05,
+                        repetition_penalty=1.1,
                         pad_token_id=test_tokenizer.pad_token_id or test_tokenizer.eos_token_id,
                     )
                 reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
