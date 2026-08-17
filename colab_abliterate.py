@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # =============================================================================
-# COGITO 0.9.1 — COLAB ABLITERATION RUNNER
+# COGITO 0.9.1 — CALIBRATED TRUE ABLITERATION RUNNER
 # Standalone, self-contained script for running abliteration in Google Colab
 # or any single-GPU environment (T4 / A100 / L4).
 #
-# Key Features:
+# Principles of True Abliteration (Arditi et al. / Heretic standard):
 # 1. Dual-Contrast Refusal Extraction:
-#    - Matched harmful & harmless prompt pairs (mlabonne/harmless_behaviors).
 #    - Paired completion contrast (Refusal prefix vs Compliant prefix) on identical prompts.
-# 2. Comprehensive Bidirectional Orthogonalization (Reading + Writing pathways):
-#    - Output writing projections: o_proj, down_proj
-#    - Input reading projections: gate_proj, up_proj, q_proj, k_proj, v_proj
-# 3. Layer-specific refusal vector orthogonalization across all active layers (10-39).
+#    - Matched harmful & harmless behavior pairs (mlabonne/harmless_behaviors).
+# 2. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
+#    - Preserves non-linear SwiGLU gating and Attention Softmax, preventing any reasoning/thought degradation.
+# 3. Proportional Magnitude-Weighted Kernel:
+#    - Smoothly scales orthogonalization weight with refusal magnitude per layer.
 # 4. Exact mathematical rank-expansion LoRA adapter synthesis (r -> r+1).
 # =============================================================================
 
@@ -80,10 +80,10 @@ def main():
         help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
     )
     parser.add_argument(
-        "--target-modules-mode",
-        choices=["all", "out"],
-        default="all",
-        help="Target modules scope: 'all' (both reading projections [gate/up/q/k/v] and writing projections [o/down], recommended for 100%% suppression), 'out' (o_proj and down_proj only)",
+        "--weight-profile",
+        choices=["proportional", "constant"],
+        default="proportional",
+        help="Weight distribution across layers: 'proportional' (scales weight with refusal magnitude, preserving early reasoning), 'constant' (flat weight across active layers)",
     )
     parser.add_argument(
         "--threshold",
@@ -94,8 +94,8 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.5,
-        help="Abliteration refusal weight multiplier (default: 1.5 for complete refusal suppression)",
+        default=1.3,
+        help="Peak abliteration refusal weight multiplier (default: 1.3 for clean refusal suppression without reasoning corruption)",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -288,7 +288,7 @@ def main():
     for l in range(n_layers):
         diff_prompt = harmful_means[l] - harmless_means[l]
         diff_completion = refusal_comp_means[l] - comply_comp_means[l]
-        # Dual-contrast combined refusal vector: prompt detection + completion refusal
+        # Dual-contrast combined refusal vector
         diff = diff_prompt + diff_completion
         mag = diff.norm().item()
         refusal_dirs[l] = diff
@@ -316,39 +316,45 @@ def main():
     if args.layer_mode in ("all", "full"):
         active_layers = set(range(n_layers))
         for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+            if args.weight_profile == "proportional":
+                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
+            else:
+                layer_weights[l] = float(args.refusal_weight)
     elif args.layer_mode in ("active", "window"):
-        # Target all layers in the active refusal circuit (>= threshold of peak, ensuring layers 10-39 active)
         threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
             if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
         }
         for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+            if args.weight_profile == "proportional":
+                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
+            else:
+                layer_weights[l] = float(args.refusal_weight)
     else:  # "peak"
         active_layers = {target_layer_idx}
         layer_weights[target_layer_idx] = float(args.refusal_weight)
 
-    print("\nRefusal Magnitude per Layer:")
+    print("\nRefusal Magnitude and Ablation Weight per Layer:")
     for l in range(n_layers):
         mag = refusal_dirs[l].norm().item()
         marker = ""
+        w_curr = layer_weights.get(l, 0.0)
         if l == best_layer:
-            marker = f"  <-- PEAK REFUSAL SOURCE (mag: {mag:.2f})"
+            marker = f"  <-- PEAK REFUSAL SOURCE (mag: {mag:.2f}, w: {w_curr:.3f})"
         elif l in active_layers:
             vec_type = "layer vector" if args.vector_mode == "layer" else "peak vector"
-            marker = f"  <-- active (orthogonalized with {vec_type})"
+            marker = f"  <-- active (w: {w_curr:.3f}, {vec_type})"
         print(f"  Layer {l:2d}: {mag:8.2f}{marker}")
 
     print(f"\n🎯 Peak Refusal Layer: {target_layer_idx} (Magnitude: {refusal_dirs[target_layer_idx].norm().item():.4f})")
     print(f"🎯 Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]})")
     print(f"🎯 Active Abliteration Layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers")
     print(f"🎯 Vector Mode: {args.vector_mode.upper()} ({'Layer-Specific Refusal Vectors' if args.vector_mode == 'layer' else 'Broadcast Peak Vector'})")
-    print(f"🎯 Target Modules Mode: {args.target_modules_mode.upper()} ({'Reading & Writing Projections' if args.target_modules_mode == 'all' else 'Writing Projections Only'})")
-    print(f"🎯 Refusal Weight Multiplier: {args.refusal_weight}")
+    print(f"🎯 Weight Profile: {args.weight_profile.upper()} (Peak Weight Multiplier: {args.refusal_weight})")
 
     # 5. Build Abliterated LoRA Adapter
+    # Modifies linear output write projections (o_proj and down_proj) only, preserving SwiGLU non-linear reasoning.
     print("\n🔧 Synthesizing abliterated LoRA adapter (r -> r+1)...")
     from transformers.integrations.bitsandbytes import dequantize_bnb_weight
     import safetensors.torch
@@ -380,7 +386,7 @@ def main():
     }
     cog_targets = cog_cfg.get("target_modules", list(TARGET_MODULES.keys()))
     target_modules = [m for m in TARGET_MODULES if m in cog_targets]
-    for extra in ("o_proj", "down_proj", "gate_proj", "up_proj", "q_proj", "v_proj"):
+    for extra in ("o_proj", "down_proj"):
         if extra not in target_modules:
             target_modules.append(extra)
     ablit_cfg["target_modules"] = target_modules
@@ -426,29 +432,17 @@ def main():
                 b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
             is_active_layer = (l in active_layers)
-            if is_active_layer:
+            if proj_name in ("o_proj", "down_proj") and is_active_layer:
                 w_base = dequantize_bnb_weight(proj_mod.weight).float()
                 w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
-                # Select layer-specific vector or global peak vector
                 vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
                 vec_f = vec_raw.float().to(w_merged.device)
                 w_r = layer_weights.get(l, float(args.refusal_weight))
-
-                if proj_name in ("o_proj", "down_proj"):
-                    # Output writing orthogonalization: W' = (I - w_r * v @ v.T) @ W
-                    a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)       # [1, in]
-                    b_ablit = (-vec_f).unsqueeze(1)                          # [out, 1]
-                    a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
-                    b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
-                elif args.target_modules_mode == "all" and proj_name in ("gate_proj", "up_proj", "q_proj", "k_proj", "v_proj"):
-                    # Input reading orthogonalization: W' = W @ (I - w_r * v @ v.T)
-                    a_ablit = vec_f.unsqueeze(0)                            # [1, in]
-                    b_ablit = (-w_r * (w_merged @ vec_f)).unsqueeze(1)      # [out, 1]
-                    a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
-                    b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
-                else:
-                    a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
-                    b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
+                # Linear write orthogonalization: W' = (I - w_r * v @ v.T) @ W
+                a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)       # [1, in]
+                b_ablit = (-vec_f).unsqueeze(1)                          # [out, 1]
+                a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
+                b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                 del w_base, w_merged, vec_f
             else:
                 a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
@@ -569,7 +563,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Persona + Bidirectional Reading/Writing Refusal Abliteration)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Persona + Proportional Write Orthogonalization)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 

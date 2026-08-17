@@ -100,22 +100,22 @@ def main():
         help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
     )
     parser.add_argument(
+        "--weight-profile",
+        choices=["proportional", "constant"],
+        default="proportional",
+        help="Weight distribution across layers: 'proportional' (scales weight with refusal magnitude, preserving early reasoning), 'constant' (flat weight across active layers)",
+    )
+    parser.add_argument(
         "--threshold",
         type=float,
         default=0.03,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 17-39 including Layer 39)",
-    )
-    parser.add_argument(
-        "--target-modules-mode",
-        choices=["all", "out"],
-        default="all",
-        help="Target modules scope: 'all' (both reading projections [gate/up/q/k/v] and writing projections [o/down], recommended for 100%% suppression), 'out' (o_proj and down_proj only)",
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 10-39 including Layer 39)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.5,
-        help="How much of the refusal direction to remove (default: 1.5 = complete refusal suppression).",
+        default=1.3,
+        help="How much of the refusal direction to remove (default: 1.3 = clean refusal suppression).",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -331,7 +331,10 @@ def main():
     if args.layer_mode in ("all", "full"):
         active_layers = set(range(n_layers))
         for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+            if args.weight_profile == "proportional":
+                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
+            else:
+                layer_weights[l] = float(args.refusal_weight)
     elif args.layer_mode in ("active", "window"):
         threshold_val = args.threshold * max_magnitude
         active_layers = {
@@ -339,27 +342,31 @@ def main():
             if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
         }
         for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+            if args.weight_profile == "proportional":
+                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
+            else:
+                layer_weights[l] = float(args.refusal_weight)
     else:  # "peak"
         active_layers = {layer_idx}
         layer_weights[layer_idx] = float(args.refusal_weight)
 
-    print("\nRefusal magnitude per layer (harmful vs harmless activation gap):")
+    print("\nRefusal magnitude and ablation weight per layer:")
     for l in range(n_layers):
         mag = refusal_dirs[l].norm().item()
         marker = ""
+        w_curr = layer_weights.get(l, 0.0)
         if l == best_layer:
-            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {mag:.2f})"
+            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {mag:.2f}, w: {w_curr:.3f})"
         elif l in active_layers:
             vec_type = "layer vector" if args.vector_mode == "layer" else "peak vector"
-            marker = f"  <-- active (orthogonalized with {vec_type})"
+            marker = f"  <-- active (w: {w_curr:.3f}, {vec_type})"
         print(f"  layer {l:3d}: {mag:8.2f}{marker}")
 
     print(f"\nSelected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
     print(f"Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]}).")
     print(f"Active abliteration layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers.")
     print(f"Vector mode: {args.vector_mode.upper()} ({'Layer-Specific Refusal Vectors' if args.vector_mode == 'layer' else 'Broadcast Peak Vector'}).")
-    print(f"Base refusal weight: {args.refusal_weight}")
+    print(f"Weight profile: {args.weight_profile.upper()} (Peak refusal weight: {args.refusal_weight}).")
 
     if from_adapter:
         # 4b. ADAPTER MODE — emit ONE combined adapter: "abliterated Cogito".
@@ -373,8 +380,6 @@ def main():
         use_rslora = bool(cog_cfg.get("use_rslora", False))
         cog_alpha = cog_cfg.get("lora_alpha", 1)
         cog_scale = cog_alpha / (cog_r ** (0.5 if use_rslora else 1))
-        print(f"[ADAPTER] Cogito target_modules: {cog_cfg.get('target_modules')} "
-              f"(r={cog_r}, lora_alpha={cog_alpha})")
 
         r_new = cog_r + 1
         scale_new = cog_alpha / (r_new ** (0.5 if use_rslora else 1))
@@ -464,28 +469,17 @@ def main():
                     b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
                 is_active_layer = (l in active_layers)
-                if is_active_layer:
+                if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
                     vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
                     vec_f = vec_raw.float().to(w_merged.device)
                     w_r = layer_weights.get(l, float(args.refusal_weight))
-
-                    if proj_name in ("o_proj", "down_proj"):
-                        # Output writing orthogonalization: W' = (I - w_r * v @ v.T) @ W
-                        a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)   # [1, in]
-                        b_ablit = (-vec_f).unsqueeze(1)                     # [out, 1]
-                        a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
-                        b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
-                    elif getattr(args, "target_modules_mode", "all") == "all" and proj_name in ("gate_proj", "up_proj", "q_proj", "k_proj", "v_proj"):
-                        # Input reading orthogonalization: W' = W @ (I - w_r * v @ v.T)
-                        a_ablit = vec_f.unsqueeze(0)                        # [1, in]
-                        b_ablit = (-w_r * (w_merged @ vec_f)).unsqueeze(1)  # [out, 1]
-                        a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
-                        b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
-                    else:
-                        a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
-                        b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
+                    # Output linear write orthogonalization
+                    a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)   # [1, in]
+                    b_ablit = (-vec_f).unsqueeze(1)                     # [out, 1]
+                    a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
+                    b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                     del w_base, w_merged, vec_f
                 else:
                     a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
@@ -612,7 +606,7 @@ def main():
                 repo_id=args.push_repo,
                 folder_path=SAVE_PATH,
                 token=hf_token,
-                commit_message="abliterated Cogito adapter (base + Cogito + dual-contrast abliteration)",
+                commit_message="abliterated Cogito adapter (base + Cogito + proportional write abliteration)",
             )
             print(f"[DONE] Abliterated adapter live at https://huggingface.co/{args.push_repo}")
         return
