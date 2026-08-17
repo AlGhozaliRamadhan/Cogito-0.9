@@ -297,7 +297,7 @@ def main():
                 a_cog = torch.zeros(cog_r, in_f, dtype=torch.float16)
                 b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
-            is_active_layer = refusal_dirs[l].norm().item() >= 0.20 * max_magnitude
+            is_active_layer = refusal_dirs[l].norm().item() >= 0.05 * max_magnitude
             if proj_name in ("o_proj", "down_proj") and is_active_layer:
                 w_base = dequantize_bnb_weight(proj_mod.weight).float()
                 w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
