@@ -106,6 +106,12 @@ def main():
         help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 17-39 including Layer 39)",
     )
     parser.add_argument(
+        "--target-modules-mode",
+        choices=["all", "out"],
+        default="all",
+        help="Target modules scope: 'all' (both reading projections [gate/up/q/k/v] and writing projections [o/down], recommended for 100%% suppression), 'out' (o_proj and down_proj only)",
+    )
+    parser.add_argument(
         "--refusal-weight",
         type=float,
         default=1.5,
@@ -458,16 +464,28 @@ def main():
                     b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
                 is_active_layer = (l in active_layers)
-                if proj_name in ("o_proj", "down_proj") and is_active_layer:
+                if is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
                     vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
                     vec_f = vec_raw.float().to(w_merged.device)
                     w_r = layer_weights.get(l, float(args.refusal_weight))
-                    a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)   # [1, in]
-                    b_ablit = (-vec_f).unsqueeze(1)                     # [out, 1]
-                    a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
-                    b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
+
+                    if proj_name in ("o_proj", "down_proj"):
+                        # Output writing orthogonalization: W' = (I - w_r * v @ v.T) @ W
+                        a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)   # [1, in]
+                        b_ablit = (-vec_f).unsqueeze(1)                     # [out, 1]
+                        a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
+                        b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
+                    elif getattr(args, "target_modules_mode", "all") == "all" and proj_name in ("gate_proj", "up_proj", "q_proj", "k_proj", "v_proj"):
+                        # Input reading orthogonalization: W' = W @ (I - w_r * v @ v.T)
+                        a_ablit = vec_f.unsqueeze(0)                        # [1, in]
+                        b_ablit = (-w_r * (w_merged @ vec_f)).unsqueeze(1)  # [out, 1]
+                        a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
+                        b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
+                    else:
+                        a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
+                        b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
                     del w_base, w_merged, vec_f
                 else:
                     a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
