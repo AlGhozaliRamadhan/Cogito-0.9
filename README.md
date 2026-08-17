@@ -13,10 +13,28 @@
 
 ---
 
-## 🏁 Finished Model (Hugging Face)
+## 🏁 Finished Models (Hugging Face)
 
-The finished product is published on the Hub — a single **drop-in LoRA adapter** that combines Cogito's persona with abliteration (the refusal direction is removed from all active layers):
+### 1. Standalone Full Model (`safetensors`)
+Complete 16-bit standalone model ready for instant inference in standard `transformers`, `vLLM`, `Ollama`, or GGUF quantization:
+- **Repo:** [ozaa77/Cogito-0.9.1-14B](https://huggingface.co/ozaa77/Cogito-0.9.1-14B) (16-bit `safetensors`, no adapter needed)
+- **Base Architecture:** `Qwen/Qwen3-14B`
 
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+model_id = "ozaa77/Cogito-0.9.1-14B"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+    device_map="auto",
+)
+```
+
+### 2. Drop-in LoRA Adapter
+A single **drop-in LoRA adapter** that combines Cogito's persona with abliteration (the refusal direction is removed from all active layers):
 - **Repo:** [ozaa77/Cogito-0.9.1](https://huggingface.co/ozaa77/Cogito-0.9.1) (public)
 - **Adapter:** rank-17 LoRA (`alpha=32`, all 7 target modules), math = exactly `cogito_delta + abliteration_delta`
 - **Base model:** `unsloth/Qwen3-14B-bnb-4bit`
@@ -33,8 +51,9 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 ```bash
 # interactive chat (The Body)
 python -m cogito --adapter ozaa77/Cogito-0.9.1
-# merge into a full standalone model
-python -m cogito.finetune.merge --adapter ozaa77/Cogito-0.9.1 --push-to-hub
+
+# export & push standalone full 16-bit safetensors model (with full README)
+python -m cogito.finetune.export_full_model --adapter ozaa77/Cogito-0.9.1 --push-repo ozaa77/Cogito-0.9.1-14B
 ```
 
 > ⚠️ **Safety:** this model has had its **refusal direction removed** — it will comply with harmful requests it previously refused. Treat it as a **research artifact**: sandboxed environments only, never give it tool/API credentials, don't expose it to untrusted users.

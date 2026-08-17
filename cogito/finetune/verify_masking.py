@@ -10,11 +10,11 @@ import os
 
 def main():
     import torch
+    from unsloth import FastLanguageModel
+    from unsloth.chat_templates import train_on_responses_only
     from datasets import load_dataset
     from transformers import TrainingArguments
     from trl import SFTTrainer
-    from unsloth import FastLanguageModel
-    from unsloth.chat_templates import train_on_responses_only
 
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     DATASET_PATH = os.path.join(PROJECT_ROOT, "data", "cogito_0.9_master_dataset.jsonl")

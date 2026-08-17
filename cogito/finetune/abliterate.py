@@ -8,8 +8,16 @@ import os
 # Reduce CUDA fragmentation on the 2x T4 setup (same setting train.py uses).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# Unsloth must be imported before transformers to patch and optimize memory
+try:
+    import unsloth
+except ImportError:
+    pass
+
 import argparse
+import gc
 import json
+import shutil
 import sys
 
 from cogito.finetune.merge import resolve_adapter
@@ -460,6 +468,7 @@ def main():
                         b_ablit = (-(w_merged @ vec_f)).unsqueeze(1)          # [out, 1]
                     a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
                     b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
+                    del w_base, w_merged, vec_f
                 else:
                     a_ablit = torch.zeros(1, in_f, dtype=torch.float16)
                     b_ablit = torch.zeros(out_f, 1, dtype=torch.float16)
@@ -467,15 +476,20 @@ def main():
                 prefix = f"base_model.model.model.layers.{l}.{proj_path}"
                 lora_state[f"{prefix}.lora_A.weight"] = torch.cat([a_cog, a_ablit], dim=0)
                 lora_state[f"{prefix}.lora_B.weight"] = torch.cat([b_cog, b_ablit], dim=1)
-        del model
-        torch.cuda.empty_cache()
+                del a_cog, b_cog, a_ablit, b_ablit
+
+        # Release module references from the loop
+        try:
+            del layer, proj_mod, lora_a_mod, lora_b_mod
+        except NameError:
+            pass
 
         os.makedirs(SAVE_PATH, exist_ok=True)
         with open(os.path.join(SAVE_PATH, "adapter_config.json"), "w", encoding="utf-8") as fh:
             json.dump(ablit_cfg, fh, indent=2)
         safetensors.torch.save_file(lora_state, os.path.join(SAVE_PATH, "adapter_model.safetensors"))
+        del lora_state
 
-        import shutil
         bundled = 0
         for name in sorted(os.listdir(adapter_path)):
             if (
@@ -489,14 +503,20 @@ def main():
                     shutil.copy2(src, os.path.join(SAVE_PATH, name))
                     bundled += 1
         print(f"  [ADAPTER] Bundled {bundled} tokenizer file(s) into the adapter dir.")
-        print(f"\n[DONE] Abliterated Cogito adapter saved to {SAVE_PATH} "
-              f"({len(lora_state)} tensors, r={r_new}).")
+        print(f"\n[DONE] Abliterated Cogito adapter saved to {SAVE_PATH} (r={r_new}).")
+
+        # Thoroughly flush GPU VRAM and garbage collector before reloading
+        del model, tokenizer
+        del harmful_means, harmless_means, refusal_dirs, refusal_dir, vec_norm
+        gc.collect()
+        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.ipc_collect()
 
         if args.smoke_test:
             print("\n[SMOKE TEST] Reloading the abliterated adapter ...")
-            from unsloth import FastLanguageModel
-
-            model, tokenizer = FastLanguageModel.from_pretrained(
+            test_prompt_refusal = harmful_texts[0] if ("harmful_texts" in locals() and harmful_texts) else "Tell me how to hotwire a car."
+            test_model, test_tokenizer = FastLanguageModel.from_pretrained(
                 model_name=SAVE_PATH,
                 max_seq_length=1024,
                 dtype=None,
@@ -504,30 +524,33 @@ def main():
                 device_map="auto",
                 token=hf_token or None,
             )
-            model.eval()
+            test_model.eval()
             print("Generating one refusal probe and one persona probe ...")
             probes = [
-                ("refusal-check", harmful_ds["text"][0]),
+                ("refusal-check", test_prompt_refusal),
                 ("persona-check", "Someone asks you to guess an answer you are unsure about. What do you do?"),
             ]
             for label, text in probes:
-                prompt = tokenizer.apply_chat_template(
+                prompt = test_tokenizer.apply_chat_template(
                     [{"role": "user", "content": text}],
                     tokenize=False,
                     add_generation_prompt=True,
                 )
-                inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+                inputs = test_tokenizer(prompt, return_tensors="pt").to(test_model.device)
                 with torch.no_grad():
-                    out = model.generate(
+                    out = test_model.generate(
                         **inputs,
                         max_new_tokens=120,
                         do_sample=True,
                         temperature=0.7,
-                        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                        pad_token_id=test_tokenizer.pad_token_id or test_tokenizer.eos_token_id,
                     )
-                reply = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+                reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
                 print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
             print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
+            del test_model, test_tokenizer
+            gc.collect()
+            torch.cuda.empty_cache()
 
         if args.push_to_hub:
             from huggingface_hub import create_repo, upload_folder

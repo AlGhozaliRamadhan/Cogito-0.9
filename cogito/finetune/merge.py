@@ -6,10 +6,22 @@
 # Unsloth), then optionally pushes the full model to the Hub.
 # =============================================================================
 
-import argparse
-import json
 import os
+# Reduce CUDA fragmentation on Kaggle/multi-GPU setups
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+# Unsloth must be imported before transformers
+try:
+    import unsloth
+except ImportError:
+    pass
+
+import argparse
+import gc
+import json
 import re
+import sys
+import torch
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HUB_ADAPTER_CACHE = os.path.join(PROJECT_ROOT, "_hub_adapters")
