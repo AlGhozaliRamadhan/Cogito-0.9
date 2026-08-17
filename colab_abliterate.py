@@ -304,13 +304,8 @@ def main():
                 curr_dir = refusal_dirs[l]
                 curr_norm = curr_dir / (curr_dir.norm() + 1e-8)
                 vec_f = curr_norm.float().to(w_merged.device)
-                w_r = args.refusal_weight
-                if proj_name == "down_proj":
-                    a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)
-                    b_ablit = (-vec_f).unsqueeze(1)
-                else:
-                    a_ablit = (w_r * vec_f).unsqueeze(0)
-                    b_ablit = (-(w_merged @ vec_f)).unsqueeze(1)
+                a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
+                b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
                 a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
                 b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                 del w_base, w_merged, vec_f
