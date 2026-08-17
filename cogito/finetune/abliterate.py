@@ -98,8 +98,8 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.0,
-        help="How much of the refusal direction to remove (default: 1.0 = full removal).",
+        default=1.2,
+        help="How much of the refusal direction to remove (default: 1.2 = calibrated full removal).",
     )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9.1", help="Hub repo for --push-to-hub (default: the finished-model repo root)")

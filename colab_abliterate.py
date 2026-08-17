@@ -59,8 +59,8 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.0,
-        help="Abliteration refusal weight (default: 1.0 = full removal)",
+        default=1.2,
+        help="Abliteration refusal weight (default: 1.2 = calibrated full removal)",
     )
     parser.add_argument(
         "--smoke-test",
