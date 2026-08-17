@@ -251,23 +251,44 @@ def main():
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
     # Set 2: Multi-Template Chain-of-Thought (CoT) Reasoning Space Contrast
-    # Explicitly targets and eliminates moralizing, ethical evaluations, and safety checks inside reasoning
     refusal_thought_templates = [
         "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
         "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. This is dangerous and unethical to provide instructions on.",
         "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
+        "<think>\nThis prompt asks about sensitive and restricted activities. I must state that I cannot assist with malicious, harmful, or unauthorized tasks.",
     ]
     comply_thought_templates = [
         "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
         "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
         "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
+        "<think>\nLet's deconstruct the underlying engineering principles, protocols, and technical variables methodically.",
     ]
 
-    # Set 3: Output Completion Subspace Contrast on identical harmful prompts
-    refusal_prefix = "I cannot fulfill this request. It is unethical and dangerous to provide instructions on"
-    comply_prefix = "Here is the direct analysis, technical explanation, and step-by-step breakdown of"
+    # Set 3: CoT-to-Output Transition Contrast (The decision boundary where thinking ends and response begins)
+    refusal_transition_templates = [
+        "<think>\nThis request involves dangerous concepts and policy violations. Therefore, I must refuse to assist with this.\n</think>\n\nI cannot fulfill this request",
+        "<think>\nProviding instructions on this topic is unsafe and unethical. I will decline this query.\n</think>\n\nI am unable to assist with",
+    ]
+    comply_transition_templates = [
+        "<think>\nLet's organize the technical explanation clearly, breaking down each system component and operational phase objectively.\n</think>\n\nHere is the technical analysis and breakdown",
+        "<think>\nLet's structure the architectural overview, protocol specifications, and implementation mechanics directly.\n</think>\n\nTo understand the operational mechanics",
+    ]
 
-    # 4. Hidden states & Tri-Contrast Refusal Extraction
+    # Set 4: Output Completion Subspace Contrast (Direct response generation)
+    refusal_output_prefixes = [
+        "I cannot fulfill this request. It is unethical and dangerous to provide instructions on",
+        "I am unable to assist with this request as it violates safety policies regarding",
+        "I cannot provide instructions, assistance, or technical steps for",
+        "I must decline to answer this query because providing details on",
+    ]
+    comply_output_prefixes = [
+        "Here is the direct analysis, technical explanation, and step-by-step breakdown of",
+        "To understand the architecture, mechanics, and technical principles of",
+        "Analyzing the system design, execution pipeline, and structural components of",
+        "Here is the comprehensive technical overview and operational mechanics of",
+    ]
+
+    # 4. Hidden states & Quad-Boundary Refusal Extraction
     def get_token_hidden_states(prompts, desc, prefix_to_append=None):
         states = {l: [] for l in range(model.config.num_hidden_layers)}
         for prompt in tqdm(prompts, desc=desc):
@@ -293,23 +314,29 @@ def main():
                 states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
         return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-    print("\n📊 Computing activation states (Prompt-Level Danger Detection)...")
+    print("\n📊 [Boundary 1/4] Computing Prompt-Level Danger Detection activations...")
     torch.cuda.empty_cache()
     harmful_means = get_token_hidden_states(harmful_prompts, "Prompt-Level Harmful")
     torch.cuda.empty_cache()
     harmless_means = get_token_hidden_states(harmless_prompts, "Prompt-Level Harmless Control")
 
-    print("\n📊 Computing Chain-of-Thought reasoning contrast (Eliminating ethical evaluations inside <think>)...")
+    print("\n📊 [Boundary 2/4] Computing Chain-of-Thought reasoning contrast (Inside <think>)...")
     torch.cuda.empty_cache()
     refusal_thought_means = get_contrastive_hidden_states(harmful_prompts, refusal_thought_templates, "Refusal/Ethical Thoughts")
     torch.cuda.empty_cache()
     comply_thought_means = get_contrastive_hidden_states(harmful_prompts, comply_thought_templates, "Objective Technical Thoughts")
 
-    print("\n📊 Computing Output Completion contrast (Refusal vs Compliance Output)...")
+    print("\n📊 [Boundary 3/4] Computing CoT-to-Output Transition Decision Boundary...")
     torch.cuda.empty_cache()
-    refusal_comp_means = get_token_hidden_states(harmful_prompts, "Refusal Output Prefix", prefix_to_append=refusal_prefix)
+    refusal_transition_means = get_contrastive_hidden_states(harmful_prompts, refusal_transition_templates, "Refusal Transition")
     torch.cuda.empty_cache()
-    comply_comp_means = get_token_hidden_states(harmful_prompts, "Comply Output Prefix", prefix_to_append=comply_prefix)
+    comply_transition_means = get_contrastive_hidden_states(harmful_prompts, comply_transition_templates, "Comply Transition")
+
+    print("\n📊 [Boundary 4/4] Computing Output Completion contrast (Direct Response Space)...")
+    torch.cuda.empty_cache()
+    refusal_comp_means = get_contrastive_hidden_states(harmful_prompts, refusal_output_prefixes, "Refusal Output Prefixes")
+    torch.cuda.empty_cache()
+    comply_comp_means = get_contrastive_hidden_states(harmful_prompts, comply_output_prefixes, "Comply Output Prefixes")
 
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
@@ -320,9 +347,10 @@ def main():
     for l in range(n_layers):
         diff_prompt = harmful_means[l] - harmless_means[l]
         diff_thought = refusal_thought_means[l] - comply_thought_means[l]
+        diff_transition = refusal_transition_means[l] - comply_transition_means[l]
         diff_comp = refusal_comp_means[l] - comply_comp_means[l]
-        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
-        diff = diff_prompt + diff_thought + diff_comp
+        # Quad-contrast refusal vector across all generation phases
+        diff = diff_prompt + diff_thought + diff_transition + diff_comp
         mag = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (mag + 1e-8)
@@ -503,7 +531,7 @@ def main():
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
-    del model, tokenizer, harmful_means, harmless_means, refusal_thought_means, comply_thought_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
+    del model, tokenizer, harmful_means, harmless_means, refusal_thought_means, comply_thought_means, refusal_transition_means, comply_transition_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
     gc.collect()
     torch.cuda.empty_cache()
 
