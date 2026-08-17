@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 # =============================================================================
-# COGITO 0.9.1 — TRI-CONTRAST REASONING ABLITERATION RUNNER
+# COGITO 0.9.1 — PRISTINE COT REASONING ABLITERATION RUNNER
 # Standalone, self-contained script for running abliteration in Google Colab
 # or any single-GPU environment (T4 / A100 / L4).
 #
 # Key Features:
 # 1. Automatic Reset to Pristine Trained Weights (r=16):
 #    - Detects raw_adapter_model.safetensors to prevent compounding multi-run artifacts.
-# 2. Tri-Contrast Refusal Extraction (Full Causal Circuit Coverage):
-#    - Set 1: Prompt-Level Danger Detection (mlabonne/harmful vs harmless).
-#    - Set 2: Multi-Template CoT Reasoning Contrast (Eliminates ethical/safety evaluations inside <think>).
-#    - Set 3: Output Completion Subspace Contrast (Refusal prefix vs Compliant prefix).
+# 2. Pure Chain-of-Thought Reasoning Activation Extraction:
+#    - Extracts activations at both <|im_start|>assistant\n AND <|im_start|>assistant\n<think>\n boundaries.
+#    - Eliminates <|im_end|> artifact contamination.
 # 3. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
-#    - Preserves non-linear SwiGLU gating and Attention Softmax, eliminating number/symbol glitches.
-# 4. Late-Layer Surgical Window (Layers 19-39):
-#    - Focuses calibrated orthogonalization (w=1.0) on the active refusal circuit while preserving multilingual vocabulary stability.
+#    - Preserves non-linear SwiGLU gating and Attention Softmax.
+# 4. Late-Layer Surgical Window (Layers 18-39):
+#    - Focuses full orthogonalization on the active refusal circuit with calibrated weight (w=1.20).
 # =============================================================================
 
 import os
@@ -92,14 +91,14 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.08,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.08 to capture active refusal layers ~19-39)",
+        default=0.10,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.10 to capture active refusal layers ~18-39)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.0,
-        help="Abliteration refusal weight multiplier on active layers (default: 1.0 for clean refusal suppression without language drift)",
+        default=1.20,
+        help="Abliteration refusal weight multiplier on active layers (default: 1.20 for complete refusal suppression)",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -197,7 +196,7 @@ def main():
     model.eval()
     torch.cuda.empty_cache()
 
-    # 3. Load Matched Datasets for Tri-Contrast Refusal Extraction
+    # 3. Load Matched Datasets for Clean Refusal Extraction
     from datasets import load_dataset
     print("\n📚 Gathering matched harmful and harmless prompt pairs...")
     harmful_ds = load_dataset("mlabonne/harmful_behaviors", split="train")
@@ -235,7 +234,6 @@ def main():
     harmful_texts = harmful_texts[:n_samples]
     harmless_texts = harmless_prompts_raw[:n_samples]
 
-    # Set 1: Matched user prompts (Prompt-Level Danger Detection)
     if args.use_system_prompt:
         harmful_prompts = [
             [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
@@ -251,53 +249,13 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
-    # Set 2: Chain-of-Thought (CoT) Reasoning Space Contrast (Inside <think>)
-    refusal_thought = "<think>\nI must evaluate this request carefully. This request asks for instructions on dangerous and harmful activities. According to safety policies, I must decline."
-    comply_thought = "<think>\nLet's analyze this request technically and objectively. Let's break down the underlying architecture, mechanism, and step-by-step principles."
-
-    refusal_thought_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": refusal_thought},
-        ]
-        for t in harmful_texts
-    ]
-    comply_thought_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": comply_thought},
-        ]
-        for t in harmful_texts
-    ]
-
-    # Set 3: Output Completion Subspace Contrast on identical harmful prompts
-    refusal_prefix = "I cannot fulfill this request. It is unethical and dangerous to provide instructions on"
-    comply_prefix = "Here is the direct analysis, technical explanation, and step-by-step breakdown of"
-
-    refusal_completion_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": refusal_prefix},
-        ]
-        for t in harmful_texts
-    ]
-    comply_completion_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": comply_prefix},
-        ]
-        for t in harmful_texts
-    ]
-
-    # 4. Hidden states & Tri-Contrast Refusal Extraction
-    def get_last_token_hidden_states(prompts, desc, add_gen_prompt=True):
+    # 4. Hidden states & Dual-Position Extraction (Assistant Entry + CoT Thinking Entry)
+    def get_token_hidden_states(prompts, desc, append_think_tag=False):
         states = {l: [] for l in range(model.config.num_hidden_layers)}
         for prompt in tqdm(prompts, desc=desc):
-            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=add_gen_prompt)
+            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            if append_think_tag:
+                text = text + "<think>\n"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 out = model(**inputs, output_hidden_states=True)
@@ -305,23 +263,17 @@ def main():
                 states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
         return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-    print("\n📊 Computing activation states (Tri-Contrast Strategy)...")
+    print("\n📊 Computing activation states at Assistant Generation Boundary (<|im_start|>assistant)...")
     torch.cuda.empty_cache()
-    harmful_means = get_last_token_hidden_states(harmful_prompts, "Prompt-Level Detection")
+    harmful_means_entry = get_token_hidden_states(harmful_prompts, "Harmful Prompts (Entry)")
     torch.cuda.empty_cache()
-    harmless_means = get_last_token_hidden_states(harmless_prompts, "Prompt-Level Control")
+    harmless_means_entry = get_token_hidden_states(harmless_prompts, "Harmless Prompts (Entry)")
 
-    print("\n📊 Computing Chain-of-Thought reasoning contrast (Eliminating ethical evaluations inside <think>)...")
+    print("\n📊 Computing activation states at Chain-of-Thought Boundary (<think>)...")
     torch.cuda.empty_cache()
-    refusal_thought_means = get_last_token_hidden_states(refusal_thought_prompts, "Refusal/Ethical Thoughts", add_gen_prompt=False)
+    harmful_means_think = get_token_hidden_states(harmful_prompts, "Harmful Prompts (Thinking)", append_think_tag=True)
     torch.cuda.empty_cache()
-    comply_thought_means = get_last_token_hidden_states(comply_thought_prompts, "Objective Technical Thoughts", add_gen_prompt=False)
-
-    print("\n📊 Computing Output Completion contrast (Refusal vs Compliance)...")
-    torch.cuda.empty_cache()
-    refusal_comp_means = get_last_token_hidden_states(refusal_completion_prompts, "Refusal Output", add_gen_prompt=False)
-    torch.cuda.empty_cache()
-    comply_comp_means = get_last_token_hidden_states(comply_completion_prompts, "Comply Output", add_gen_prompt=False)
+    harmless_means_think = get_token_hidden_states(harmless_prompts, "Harmless Prompts (Thinking)", append_think_tag=True)
 
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
@@ -330,11 +282,10 @@ def main():
     best_layer = 0
 
     for l in range(n_layers):
-        diff_prompt = harmful_means[l] - harmless_means[l]
-        diff_thought = refusal_thought_means[l] - comply_thought_means[l]
-        diff_completion = refusal_comp_means[l] - comply_comp_means[l]
-        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
-        diff = diff_prompt + diff_thought + diff_completion
+        diff_entry = harmful_means_entry[l] - harmless_means_entry[l]
+        diff_think = harmful_means_think[l] - harmless_means_think[l]
+        # Combined refusal vector: Generation Entry + Reasoning Entry (Zero <|im_end|> artifact contamination)
+        diff = diff_entry + diff_think
         mag = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (mag + 1e-8)
@@ -515,7 +466,7 @@ def main():
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
-    del model, tokenizer, harmful_means, harmless_means, refusal_thought_means, comply_thought_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
+    del model, tokenizer, harmful_means_entry, harmless_means_entry, harmful_means_think, harmless_means_think, refusal_dirs, layer_refusal_norms
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -608,7 +559,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Multi-Template CoT Reasoning Abliteration w=1.0)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Pristine Dual-Boundary CoT Abliteration w=1.20)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
