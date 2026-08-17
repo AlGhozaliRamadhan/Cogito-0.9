@@ -106,10 +106,16 @@ def main():
         help="Weight distribution across layers: 'proportional' (scales weight with refusal magnitude, preserving early reasoning), 'constant' (flat weight across active layers)",
     )
     parser.add_argument(
+        "--min-layer",
+        type=int,
+        default=18,
+        help="Minimum layer index to apply abliteration (default: 18, preserves early-layer syntax and prevents token corruption)",
+    )
+    parser.add_argument(
         "--threshold",
         type=float,
-        default=0.03,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 10-39 including Layer 39)",
+        default=0.05,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.05)",
     )
     parser.add_argument(
         "--refusal-weight",
@@ -379,27 +385,24 @@ def main():
     peak_refusal_norm = layer_refusal_norms[layer_idx]
 
     layer_weights = {}
+    min_layer = args.min_layer
     if args.layer_mode in ("all", "full"):
-        active_layers = set(range(n_layers))
-        for l in active_layers:
-            if args.weight_profile == "proportional":
-                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
-            else:
-                layer_weights[l] = float(args.refusal_weight)
+        active_layers = {l for l in range(n_layers) if l >= min_layer}
     elif args.layer_mode in ("active", "window"):
         threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
+            if (refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)) and l >= min_layer
         }
-        for l in active_layers:
-            if args.weight_profile == "proportional":
-                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
-            else:
-                layer_weights[l] = float(args.refusal_weight)
     else:  # "peak"
         active_layers = {layer_idx}
-        layer_weights[layer_idx] = float(args.refusal_weight)
+
+    for l in active_layers:
+        if args.weight_profile == "proportional":
+            ratio = refusal_dirs[l].norm().item() / (max_magnitude + 1e-8)
+            layer_weights[l] = float(args.refusal_weight) * (ratio ** 0.5)
+        else:
+            layer_weights[l] = float(args.refusal_weight)
 
     print("\nRefusal magnitude and ablation weight per layer:")
     for l in range(n_layers):

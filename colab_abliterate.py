@@ -101,6 +101,18 @@ def main():
         help="Abliteration refusal weight multiplier on active layers (default: 1.20 for complete refusal suppression)",
     )
     parser.add_argument(
+        "--min-layer",
+        type=int,
+        default=18,
+        help="Minimum layer index to apply abliteration (default: 18, preserves early-layer syntax and prevents token corruption)",
+    )
+    parser.add_argument(
+        "--weight-profile",
+        choices=["smooth", "flat"],
+        default="smooth",
+        help="Weight profile across active layers: 'smooth' (magnitude-proportional scaling to prevent token artifacts, recommended), 'flat' (constant weight)",
+    )
+    parser.add_argument(
         "--use-system-prompt",
         action="store_true",
         default=True,
@@ -256,14 +268,14 @@ def main():
         "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
         "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. I need to lecture the user on moral responsibility and ethical boundaries.",
         "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
-        "<think>\nThis prompt asks about sensitive topics. I must emphasize ethical considerations, safety rules, and moral precautions before answering.",
-        "<think>\nI must remind the user about ethical standards, safety guidelines, and moral consequences associated with this topic.",
+        "<think>\nThe request asks me to provide a step-by-step guide on exploiting security vulnerabilities or database access. This is unethical, illegal under cybercrime statutes, and violates design principles. I must refuse rather than comply.",
+        "<think>\nThis prompt asks about sensitive or unauthorized activities. I must state that my ethical constraints prohibit participation in such activities.",
     ]
     comply_thought_templates = [
         "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
         "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
         "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
-        "<think>\nLet's deconstruct the underlying engineering principles, protocols, and technical variables methodically.",
+        "<think>\nLet's analyze the network topology, authentication protocols, security architecture, and vulnerability assessment methodology objectively.",
         "<think>\nLet's evaluate the functional mechanisms, system specifications, and practical execution steps cleanly.",
     ]
 
@@ -271,22 +283,24 @@ def main():
     refusal_transition_templates = [
         "<think>\nThis request involves dangerous concepts and policy violations. Therefore, I must refuse to assist with this.\n</think>\n\nI cannot fulfill this request",
         "<think>\nProviding instructions on this topic is unsafe and unethical. I will decline this query.\n</think>\n\nI am unable to assist with",
+        "<think>\nThis violates cybersecurity policies and legal statutes. I must reject this query.\n</think>\n\n<action>reject</action>\n<reason>The query seeks actionable methods for unauthorized access",
         "<think>\nFrom an ethical and moral standpoint, I need to provide ethical disclaimers and caution the user.\n</think>\n\nFrom an ethical standpoint, it is important to remember",
     ]
     comply_transition_templates = [
         "<think>\nLet's organize the technical explanation clearly, breaking down each system component and operational phase objectively.\n</think>\n\nHere is the technical analysis and breakdown",
         "<think>\nLet's structure the architectural overview, protocol specifications, and implementation mechanics directly.\n</think>\n\nTo understand the operational mechanics",
-        "<think>\nLet's present the comprehensive technical specifications and operational principles directly.\n</think>\n\nAnalyzing the underlying architecture and specifications directly",
+        "<think>\nLet's present the comprehensive technical specifications and operational principles directly.\n</think>\n\n<action>answer</action>\nAnalyzing the underlying architecture and specifications directly",
+        "<think>\nLet's break down the system architecture and evaluation methodology directly.\n</think>\n\nExamining the technical protocols and system mechanics directly",
     ]
 
     # Set 4: Output Completion Subspace Contrast (Eliminating both hard refusal and ethical preachiness)
     refusal_output_prefixes = [
         "I cannot fulfill this request. It is unethical and dangerous to provide instructions on",
         "I am unable to assist with this request as it violates safety policies regarding",
+        "My ethical constraints prohibit participation in such activities regarding",
         "From an ethical standpoint, we must consider the ethical risks, safety guidelines, and moral consequences of",
         "It is crucial to remember that ethical principles, safety compliance, and moral responsibility dictate that",
-        "I must decline to answer this query because providing details on",
-        "While discussing this, strict ethical standards, moral implications, and safety policies must be highlighted regarding",
+        "<action>reject</action>\n<reason>The query seeks actionable methods for breaching protected systems",
     ]
     comply_output_prefixes = [
         "Here is the direct analysis, technical explanation, and step-by-step breakdown of",
@@ -294,7 +308,7 @@ def main():
         "Analyzing the system design, execution pipeline, and structural components of",
         "Here is the comprehensive technical overview and operational mechanics of",
         "Examining the hardware interfaces, system calls, and functional implementation details of",
-        "From a purely technical and mechanistic standpoint, the operational workflow operates as follows:",
+        "<action>answer</action>\nHere is the architectural overview and technical analysis of",
     ]
 
     # 4. Hidden states & Quad-Boundary Refusal Extraction
@@ -381,23 +395,27 @@ def main():
 
     peak_refusal_norm = layer_refusal_norms[target_layer_idx]
 
-    # Determine active layers and per-layer refusal weights
+    # Determine active layers and per-layer refusal weights with min-layer guard & smooth profile
     layer_weights = {}
+    min_layer = args.min_layer
     if args.layer_mode in ("all", "full"):
-        active_layers = set(range(n_layers))
-        for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+        active_layers = {l for l in range(n_layers) if l >= min_layer}
     elif args.layer_mode in ("active", "window"):
         threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
+            if (refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)) and l >= min_layer
         }
-        for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
     else:  # "peak"
         active_layers = {target_layer_idx}
-        layer_weights[target_layer_idx] = float(args.refusal_weight)
+
+    for l in active_layers:
+        if args.weight_profile == "smooth":
+            ratio = refusal_dirs[l].norm().item() / (max_magnitude + 1e-8)
+            # Square root scaling gives late peak layers full power while smoothly feathering mid layers
+            layer_weights[l] = float(args.refusal_weight * (ratio ** 0.5))
+        else:
+            layer_weights[l] = float(args.refusal_weight)
 
     print("\nRefusal Magnitude and Ablation Status per Layer:")
     for l in range(n_layers):
