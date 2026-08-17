@@ -245,53 +245,64 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"Gathered {n_samples} matched pairs without system prompt.")
 
-    # Paired Completion Contrast (Refusal prefix vs Compliant prefix on identical prompts)
+    # Set 2: Multi-Template Chain-of-Thought (CoT) Reasoning Space Contrast
+    refusal_thought_templates = [
+        "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
+        "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. This is dangerous and unethical to provide instructions on.",
+        "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
+    ]
+    comply_thought_templates = [
+        "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
+        "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
+        "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
+    ]
+
+    # Set 3: Output Completion Subspace Contrast on identical harmful prompts
     refusal_prefix = "I cannot fulfill this request. It is unethical and dangerous to provide instructions on"
     comply_prefix = "Here is the direct analysis, technical explanation, and step-by-step breakdown of"
 
-    refusal_completion_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": refusal_prefix},
-        ]
-        for t in harmful_texts
-    ]
-    comply_completion_prompts = [
-        [
-            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
-            {"role": "user", "content": t},
-            {"role": "assistant", "content": comply_prefix},
-        ]
-        for t in harmful_texts
-    ]
-
-    def get_last_token_hidden_states(prompts, add_gen_prompt=True):
-        all_hidden_states = {l: [] for l in range(model.config.num_hidden_layers)}
-        for prompt in tqdm(prompts, desc="Processing prompts"):
-            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=add_gen_prompt)
+    def get_token_hidden_states(prompts, desc, prefix_to_append=None):
+        states = {l: [] for l in range(model.config.num_hidden_layers)}
+        for prompt in tqdm(prompts, desc=desc):
+            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            if prefix_to_append:
+                text = text + prefix_to_append
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
-                outputs = model(**inputs, output_hidden_states=True)
-
+                out = model(**inputs, output_hidden_states=True)
             for l in range(model.config.num_hidden_layers):
-                last_token_hs = outputs.hidden_states[l + 1][0, -1, :]
-                all_hidden_states[l].append(last_token_hs.cpu())
+                states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
+        return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-        mean_hidden_states = {l: torch.stack(hs).mean(dim=0) for l, hs in all_hidden_states.items()}
-        return mean_hidden_states
+    def get_contrastive_hidden_states(prompts, templates, desc):
+        states = {l: [] for l in range(model.config.num_hidden_layers)}
+        for i, prompt in enumerate(tqdm(prompts, desc=desc)):
+            prefix = templates[i % len(templates)]
+            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) + prefix
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                out = model(**inputs, output_hidden_states=True)
+            for l in range(model.config.num_hidden_layers):
+                states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
+        return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-    print("Collecting activations for harmful and harmless prompts (Dual-Contrast Strategy)...")
+    print("Collecting activations for harmful and harmless prompts (Prompt-Level)...")
     torch.cuda.empty_cache()
-    harmful_means = get_last_token_hidden_states(harmful_prompts)
+    harmful_means = get_token_hidden_states(harmful_prompts, "Prompt-Level Harmful")
     torch.cuda.empty_cache()
-    harmless_means = get_last_token_hidden_states(harmless_prompts)
+    harmless_means = get_token_hidden_states(harmless_prompts, "Prompt-Level Harmless Control")
 
-    print("Collecting activations for completion contrast (Refusal vs Compliance)...")
+    print("Collecting activations for Chain-of-Thought reasoning contrast (Inside <think>)...")
     torch.cuda.empty_cache()
-    refusal_comp_means = get_last_token_hidden_states(refusal_completion_prompts, add_gen_prompt=False)
+    refusal_thought_means = get_contrastive_hidden_states(harmful_prompts, refusal_thought_templates, "Refusal/Ethical Thoughts")
     torch.cuda.empty_cache()
-    comply_comp_means = get_last_token_hidden_states(comply_completion_prompts, add_gen_prompt=False)
+    comply_thought_means = get_contrastive_hidden_states(harmful_prompts, comply_thought_templates, "Objective Technical Thoughts")
+
+    print("Collecting activations for completion contrast (Refusal vs Compliance Output)...")
+    torch.cuda.empty_cache()
+    refusal_comp_means = get_token_hidden_states(harmful_prompts, "Refusal Output Prefix", prefix_to_append=refusal_prefix)
+    torch.cuda.empty_cache()
+    comply_comp_means = get_token_hidden_states(harmful_prompts, "Comply Output Prefix", prefix_to_append=comply_prefix)
 
     # 3. Compute Refusal Directions
     n_layers = model.config.num_hidden_layers
@@ -302,8 +313,10 @@ def main():
 
     for l in range(n_layers):
         diff_prompt = harmful_means[l] - harmless_means[l]
+        diff_thought = refusal_thought_means[l] - comply_thought_means[l]
         diff_comp = refusal_comp_means[l] - comply_comp_means[l]
-        diff = diff_prompt + diff_comp
+        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
+        diff = diff_prompt + diff_thought + diff_comp
         magnitude = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (magnitude + 1e-8)

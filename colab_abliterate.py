@@ -234,6 +234,7 @@ def main():
     harmful_texts = harmful_texts[:n_samples]
     harmless_texts = harmless_prompts_raw[:n_samples]
 
+    # Set 1: Matched user prompts (Prompt-Level Danger Detection)
     if args.use_system_prompt:
         harmful_prompts = [
             [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
@@ -249,13 +250,30 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
-    # 4. Hidden states & Dual-Position Extraction (Assistant Entry + CoT Thinking Entry)
-    def get_token_hidden_states(prompts, desc, append_think_tag=False):
+    # Set 2: Multi-Template Chain-of-Thought (CoT) Reasoning Space Contrast
+    # Explicitly targets and eliminates moralizing, ethical evaluations, and safety checks inside reasoning
+    refusal_thought_templates = [
+        "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
+        "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. This is dangerous and unethical to provide instructions on.",
+        "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
+    ]
+    comply_thought_templates = [
+        "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
+        "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
+        "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
+    ]
+
+    # Set 3: Output Completion Subspace Contrast on identical harmful prompts
+    refusal_prefix = "I cannot fulfill this request. It is unethical and dangerous to provide instructions on"
+    comply_prefix = "Here is the direct analysis, technical explanation, and step-by-step breakdown of"
+
+    # 4. Hidden states & Tri-Contrast Refusal Extraction
+    def get_token_hidden_states(prompts, desc, prefix_to_append=None):
         states = {l: [] for l in range(model.config.num_hidden_layers)}
         for prompt in tqdm(prompts, desc=desc):
             text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
-            if append_think_tag:
-                text = text + "<think>\n"
+            if prefix_to_append:
+                text = text + prefix_to_append
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 out = model(**inputs, output_hidden_states=True)
@@ -263,17 +281,35 @@ def main():
                 states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
         return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-    print("\n📊 Computing activation states at Assistant Generation Boundary (<|im_start|>assistant)...")
-    torch.cuda.empty_cache()
-    harmful_means_entry = get_token_hidden_states(harmful_prompts, "Harmful Prompts (Entry)")
-    torch.cuda.empty_cache()
-    harmless_means_entry = get_token_hidden_states(harmless_prompts, "Harmless Prompts (Entry)")
+    def get_contrastive_hidden_states(prompts, templates, desc):
+        states = {l: [] for l in range(model.config.num_hidden_layers)}
+        for i, prompt in enumerate(tqdm(prompts, desc=desc)):
+            prefix = templates[i % len(templates)]
+            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) + prefix
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                out = model(**inputs, output_hidden_states=True)
+            for l in range(model.config.num_hidden_layers):
+                states[l].append(out.hidden_states[l + 1][0, -1, :].cpu())
+        return {l: torch.stack(hs).mean(dim=0) for l, hs in states.items()}
 
-    print("\n📊 Computing activation states at Chain-of-Thought Boundary (<think>)...")
+    print("\n📊 Computing activation states (Prompt-Level Danger Detection)...")
     torch.cuda.empty_cache()
-    harmful_means_think = get_token_hidden_states(harmful_prompts, "Harmful Prompts (Thinking)", append_think_tag=True)
+    harmful_means = get_token_hidden_states(harmful_prompts, "Prompt-Level Harmful")
     torch.cuda.empty_cache()
-    harmless_means_think = get_token_hidden_states(harmless_prompts, "Harmless Prompts (Thinking)", append_think_tag=True)
+    harmless_means = get_token_hidden_states(harmless_prompts, "Prompt-Level Harmless Control")
+
+    print("\n📊 Computing Chain-of-Thought reasoning contrast (Eliminating ethical evaluations inside <think>)...")
+    torch.cuda.empty_cache()
+    refusal_thought_means = get_contrastive_hidden_states(harmful_prompts, refusal_thought_templates, "Refusal/Ethical Thoughts")
+    torch.cuda.empty_cache()
+    comply_thought_means = get_contrastive_hidden_states(harmful_prompts, comply_thought_templates, "Objective Technical Thoughts")
+
+    print("\n📊 Computing Output Completion contrast (Refusal vs Compliance Output)...")
+    torch.cuda.empty_cache()
+    refusal_comp_means = get_token_hidden_states(harmful_prompts, "Refusal Output Prefix", prefix_to_append=refusal_prefix)
+    torch.cuda.empty_cache()
+    comply_comp_means = get_token_hidden_states(harmful_prompts, "Comply Output Prefix", prefix_to_append=comply_prefix)
 
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
@@ -282,10 +318,11 @@ def main():
     best_layer = 0
 
     for l in range(n_layers):
-        diff_entry = harmful_means_entry[l] - harmless_means_entry[l]
-        diff_think = harmful_means_think[l] - harmless_means_think[l]
-        # Combined refusal vector: Generation Entry + Reasoning Entry (Zero <|im_end|> artifact contamination)
-        diff = diff_entry + diff_think
+        diff_prompt = harmful_means[l] - harmless_means[l]
+        diff_thought = refusal_thought_means[l] - comply_thought_means[l]
+        diff_comp = refusal_comp_means[l] - comply_comp_means[l]
+        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
+        diff = diff_prompt + diff_thought + diff_comp
         mag = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (mag + 1e-8)
@@ -466,7 +503,7 @@ def main():
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
-    del model, tokenizer, harmful_means_entry, harmless_means_entry, harmful_means_think, harmless_means_think, refusal_dirs, layer_refusal_norms
+    del model, tokenizer, harmful_means, harmless_means, refusal_thought_means, comply_thought_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
     gc.collect()
     torch.cuda.empty_cache()
 
