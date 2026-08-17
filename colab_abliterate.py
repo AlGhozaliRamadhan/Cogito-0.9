@@ -78,14 +78,14 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.15,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.15 = active refusal circuit)",
+        default=0.05,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.05 to capture all refusal circuits and final Layer 39)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.25,
-        help="Abliteration refusal weight multiplier (default: 1.25 for clean refusal suppression)",
+        default=1.5,
+        help="Abliteration refusal weight multiplier (default: 1.5 for complete refusal suppression)",
     )
     parser.add_argument(
         "--use-system-prompt",
