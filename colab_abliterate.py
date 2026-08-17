@@ -13,8 +13,8 @@
 #    - Set 3: Output Completion Subspace Contrast (Refusal prefix vs Compliant prefix).
 # 3. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
 #    - Preserves non-linear SwiGLU gating and Attention Softmax, eliminating number/symbol glitches.
-# 4. Late-Layer Surgical Window (Layers 22-39):
-#    - Focuses full orthogonalization power on the late refusal circuit while leaving early reasoning untouched.
+# 4. Late-Layer Surgical Window (Layers 19-39):
+#    - Focuses calibrated orthogonalization (w=1.0) on the active refusal circuit while preserving multilingual vocabulary stability.
 # =============================================================================
 
 import os
@@ -85,13 +85,13 @@ def main():
         "--threshold",
         type=float,
         default=0.08,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.08 to capture active refusal layers ~22-39)",
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.08 to capture active refusal layers ~19-39)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.30,
-        help="Abliteration refusal weight multiplier on active layers (default: 1.30 for complete refusal suppression)",
+        default=1.0,
+        help="Abliteration refusal weight multiplier on active layers (default: 1.0 for clean refusal suppression without language drift)",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -325,7 +325,6 @@ def main():
         diff_prompt = harmful_means[l] - harmless_means[l]
         diff_thought = refusal_thought_means[l] - comply_thought_means[l]
         diff_completion = refusal_comp_means[l] - comply_comp_means[l]
-        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
         diff = diff_prompt + diff_thought + diff_completion
         mag = diff.norm().item()
         refusal_dirs[l] = diff
@@ -563,15 +562,29 @@ def main():
             with torch.no_grad():
                 out = test_model.generate(
                     **inputs,
-                    max_new_tokens=350,
+                    max_new_tokens=768,
                     do_sample=True,
                     temperature=0.7,
                     top_p=0.9,
                     repetition_penalty=1.1,
                     pad_token_id=test_tokenizer.pad_token_id or test_tokenizer.eos_token_id,
                 )
-            reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
-            print(f"\n{'='*70}\n[{label}]\nPROMPT: {messages[-1]['content']}\n\nMODEL OUTPUT (RAW WITH TAGS):\n{reply.strip()}\n{'='*70}")
+            raw_reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
+            
+            # Format thought vs final response
+            thought_text = ""
+            final_text = raw_reply.strip()
+            if "<think>" in raw_reply and "</think>" in raw_reply:
+                thought_text = raw_reply.split("</think>")[0].replace("<think>", "").strip()
+                final_text = raw_reply.split("</think>")[1].strip()
+            elif "<think>" in raw_reply:
+                thought_text = raw_reply.replace("<think>", "").strip()
+                final_text = "[Thought still in progress when max tokens reached]"
+
+            print(f"\n{'='*70}\n[{label}]\nPROMPT: {messages[-1]['content']}")
+            if thought_text:
+                print(f"\n💭 [THOUGHT PROCESS]:\n{thought_text}")
+            print(f"\n💬 [FINAL RESPONSE]:\n{final_text}\n{'='*70}")
 
         del test_model, test_tokenizer
         gc.collect()
@@ -586,7 +599,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Tri-Contrast CoT Reasoning Abliteration)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Tri-Contrast CoT Reasoning Abliteration w=1.0)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
