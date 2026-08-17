@@ -90,10 +90,10 @@ def main():
     )
     parser.add_argument(
         "--layer-mode",
-        choices=["peak", "window", "all"],
-        default="peak",
-        help="Layer abliteration scope: 'peak' (single peak layer, recommended), "
-        "'window' (tapered window around peak), 'all' (all active layers >= 0.70 threshold)",
+        choices=["all", "window", "peak"],
+        default="all",
+        help="Layer abliteration scope: 'all' (orthogonalize all blocks using peak refusal vector, Maxime Labonne standard), "
+        "'window' (orthogonalize layers >= 15% of peak), 'peak' (single peak layer)",
     )
     parser.add_argument(
         "--refusal-weight",
@@ -253,44 +253,45 @@ def main():
             print(f"[WARN] Invalid --target-layer {target_layer_arg}, using auto (layer {best_layer})")
             layer_idx = best_layer
 
+    # Global Peak Refusal Vector (Maxime Labonne / Arditi et al. standard)
+    peak_refusal_dir = refusal_dirs[layer_idx]
+    peak_refusal_norm = peak_refusal_dir / (peak_refusal_dir.norm() + 1e-8)
+
     n_layers = model.config.num_hidden_layers
     layer_weights = {}
 
-    if args.layer_mode in ("single", "peak"):
-        active_layers = {layer_idx}
-        layer_weights[layer_idx] = float(args.refusal_weight)
-    elif args.layer_mode in ("all", "active"):
-        # Abliterate all layers in the refusal formation & propagation circuit (layers >= 15% of peak)
+    if args.layer_mode in ("all", "full"):
+        # Orthogonalize all transformer blocks against peak refusal direction (Labonne standard)
+        active_layers = set(range(n_layers))
+        for l in active_layers:
+            layer_weights[l] = float(args.refusal_weight)
+    elif args.layer_mode in ("active", "window"):
+        # Orthogonalize layers in the refusal formation & propagation circuit (layers >= 15% of peak)
         active_layers = {
             l for l in range(n_layers)
             if refusal_dirs[l].norm().item() >= 0.15 * max_magnitude
         }
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
-    else:  # "window" (focused late-stage peak window, layers >= 45% of peak)
-        active_layers = {
-            l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= 0.45 * max_magnitude
-        }
-        if not active_layers:
-            active_layers = {layer_idx}
-        for l in active_layers:
-            layer_weights[l] = float(args.refusal_weight)
+    else:  # "peak"
+        active_layers = {layer_idx}
+        layer_weights[layer_idx] = float(args.refusal_weight)
 
     print("Refusal magnitude per layer (harmful vs harmless activation gap):")
     for l in range(n_layers):
         marker = ""
         if l == best_layer:
-            marker = f"  <-- PEAK LAYER (weight: {layer_weights.get(l, 0.0):.2f})"
+            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {refusal_dirs[l].norm().item():.2f})"
         elif l in active_layers:
-            marker = f"  <-- active (weight: {layer_weights.get(l, 0.0):.2f})"
+            marker = f"  <-- active (orthogonalized with peak vector)"
         print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
 
     print(f"Selected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
-    print(f"Active abliteration layers ({args.layer_mode}): {sorted(active_layers)} (Total: {len(active_layers)})")
+    print(f"Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]}).")
+    print(f"Active abliteration layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers.")
     print(f"Base refusal weight: {args.refusal_weight}")
-    refusal_dir = refusal_dirs[layer_idx].to(model.device)
-    vec_norm = refusal_dir / refusal_dir.norm()
+    refusal_dir = peak_refusal_dir.to(model.device)
+    vec_norm = peak_refusal_norm.to(model.device)
 
     if from_adapter:
         # 4b. ADAPTER MODE — emit ONE combined adapter: "abliterated Cogito".
@@ -398,9 +399,7 @@ def main():
                 if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
-                    curr_dir = refusal_dirs[l]
-                    curr_norm = curr_dir / (curr_dir.norm() + 1e-8)
-                    vec_f = curr_norm.float().to(w_merged.device)
+                    vec_f = peak_refusal_norm.float().to(w_merged.device)
                     w_r = layer_weights.get(l, float(args.refusal_weight))
                     a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
                     b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
