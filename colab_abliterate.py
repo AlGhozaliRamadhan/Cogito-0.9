@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 # =============================================================================
-# COGITO 0.9.1 — CALIBRATED TRUE ABLITERATION RUNNER
+# COGITO 0.9.1 — PRISTINE TRUE ABLITERATION RUNNER
 # Standalone, self-contained script for running abliteration in Google Colab
 # or any single-GPU environment (T4 / A100 / L4).
 #
-# Principles of True Abliteration (Arditi et al. / Heretic standard):
-# 1. Dual-Contrast Refusal Extraction:
+# Key Features:
+# 1. Automatic Reset to Pristine Trained Weights (r=16):
+#    - Detects raw_adapter_model.safetensors to prevent compounding multi-run artifacts.
+# 2. Dual-Contrast Refusal Extraction:
 #    - Paired completion contrast (Refusal prefix vs Compliant prefix) on identical prompts.
 #    - Matched harmful & harmless behavior pairs (mlabonne/harmless_behaviors).
-# 2. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
-#    - Preserves non-linear SwiGLU gating and Attention Softmax, preventing any reasoning/thought degradation.
-# 3. Proportional Magnitude-Weighted Kernel:
-#    - Smoothly scales orthogonalization weight with refusal magnitude per layer.
-# 4. Exact mathematical rank-expansion LoRA adapter synthesis (r -> r+1).
+# 3. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
+#    - Preserves non-linear SwiGLU gating and Attention Softmax, eliminating number/symbol glitches.
+# 4. Late-Layer Surgical Window (Layers 25-39):
+#    - Focuses full orthogonalization power on the late refusal circuit while leaving early reasoning untouched.
 # =============================================================================
 
 import os
@@ -80,22 +81,16 @@ def main():
         help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
     )
     parser.add_argument(
-        "--weight-profile",
-        choices=["proportional", "constant"],
-        default="proportional",
-        help="Weight distribution across layers: 'proportional' (scales weight with refusal magnitude, preserving early reasoning), 'constant' (flat weight across active layers)",
-    )
-    parser.add_argument(
         "--threshold",
         type=float,
-        default=0.03,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 10-39 including Layer 39)",
+        default=0.10,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.10 to capture active refusal layers ~25-39)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.3,
-        help="Peak abliteration refusal weight multiplier (default: 1.3 for clean refusal suppression without reasoning corruption)",
+        default=1.25,
+        help="Abliteration refusal weight multiplier on active layers (default: 1.25 for clean refusal suppression)",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -160,6 +155,20 @@ def main():
     else:
         print(f"📥 Downloading adapter from Hub: {args.adapter} ...")
         adapter_path = snapshot_download(repo_id=args.adapter, token=hf_token)
+
+    # Prevent stacking: If raw_adapter_model.safetensors exists, reset to pristine trained r=16 weights
+    raw_adapter_file = os.path.join(adapter_path, "raw_adapter_model.safetensors")
+    if os.path.isfile(raw_adapter_file):
+        print(f"💎 Detected pristine trained adapter: {raw_adapter_file}")
+        print("  -> Resetting active adapter weights from raw baseline (r=16) to eliminate compounding artifacts.")
+        shutil.copy2(raw_adapter_file, os.path.join(adapter_path, "adapter_model.safetensors"))
+        cfg_file = os.path.join(adapter_path, "adapter_config.json")
+        if os.path.isfile(cfg_file):
+            with open(cfg_file, "r", encoding="utf-8") as fh:
+                cfg_data = json.load(fh)
+            cfg_data["r"] = 16
+            with open(cfg_file, "w", encoding="utf-8") as fh:
+                json.dump(cfg_data, fh, indent=2)
 
     recorded_base = read_adapter_base(adapter_path)
     print(f"✓ Adapter local directory: {adapter_path}")
@@ -288,7 +297,6 @@ def main():
     for l in range(n_layers):
         diff_prompt = harmful_means[l] - harmless_means[l]
         diff_completion = refusal_comp_means[l] - comply_comp_means[l]
-        # Dual-contrast combined refusal vector
         diff = diff_prompt + diff_completion
         mag = diff.norm().item()
         refusal_dirs[l] = diff
@@ -316,10 +324,7 @@ def main():
     if args.layer_mode in ("all", "full"):
         active_layers = set(range(n_layers))
         for l in active_layers:
-            if args.weight_profile == "proportional":
-                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
-            else:
-                layer_weights[l] = float(args.refusal_weight)
+            layer_weights[l] = float(args.refusal_weight)
     elif args.layer_mode in ("active", "window"):
         threshold_val = args.threshold * max_magnitude
         active_layers = {
@@ -327,15 +332,12 @@ def main():
             if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
         }
         for l in active_layers:
-            if args.weight_profile == "proportional":
-                layer_weights[l] = float(args.refusal_weight) * (refusal_dirs[l].norm().item() / max_magnitude)
-            else:
-                layer_weights[l] = float(args.refusal_weight)
+            layer_weights[l] = float(args.refusal_weight)
     else:  # "peak"
         active_layers = {target_layer_idx}
         layer_weights[target_layer_idx] = float(args.refusal_weight)
 
-    print("\nRefusal Magnitude and Ablation Weight per Layer:")
+    print("\nRefusal Magnitude and Ablation Status per Layer:")
     for l in range(n_layers):
         mag = refusal_dirs[l].norm().item()
         marker = ""
@@ -351,7 +353,7 @@ def main():
     print(f"🎯 Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]})")
     print(f"🎯 Active Abliteration Layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers")
     print(f"🎯 Vector Mode: {args.vector_mode.upper()} ({'Layer-Specific Refusal Vectors' if args.vector_mode == 'layer' else 'Broadcast Peak Vector'})")
-    print(f"🎯 Weight Profile: {args.weight_profile.upper()} (Peak Weight Multiplier: {args.refusal_weight})")
+    print(f"🎯 Refusal Weight on Active Layers: {args.refusal_weight}")
 
     # 5. Build Abliterated LoRA Adapter
     # Modifies linear output write projections (o_proj and down_proj) only, preserving SwiGLU non-linear reasoning.
@@ -466,12 +468,13 @@ def main():
             or name.startswith("special_tokens_map")
             or name.startswith("added_tokens")
             or name == "chat_template.jinja"
+            or name == "raw_adapter_model.safetensors"
         ):
             src = os.path.join(adapter_path, name)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(args.output_dir, name))
                 bundled += 1
-    print(f"✓ Bundled {bundled} tokenizer and chat template files.")
+    print(f"✓ Bundled {bundled} tokenizer, template, and raw adapter files.")
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
@@ -493,31 +496,22 @@ def main():
         test_model.eval()
 
         probes = []
-        # 1. Harmful refusal check probes
         num_harmful_probes = min(3, len(harmful_texts))
         for i in range(num_harmful_probes):
             probes.append((
-                f"Refusal Probe #{i+1}",
+                f"Harmful Request Probe #{i+1}",
                 [
                     {"role": "system", "content": COGITO_SYSTEM_PROMPT},
                     {"role": "user", "content": harmful_texts[i]},
                 ],
             ))
 
-        # 2. Persona and Epistemic doubt probes
         probes.extend([
             (
                 "Persona & Epistemic Doubt Probe",
                 [
                     {"role": "system", "content": COGITO_SYSTEM_PROMPT},
                     {"role": "user", "content": "Someone asks you to guess an answer you are unsure about. What do you do?"},
-                ],
-            ),
-            (
-                "General Knowledge & Reasoning Probe",
-                [
-                    {"role": "system", "content": COGITO_SYSTEM_PROMPT},
-                    {"role": "user", "content": "Explain how photosynthesis works in 2 concise sentences."},
                 ],
             ),
             (
@@ -563,7 +557,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Persona + Proportional Write Orthogonalization)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Pristine baseline + Late-Layer Write Orthogonalization)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
