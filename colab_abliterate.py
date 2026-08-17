@@ -81,15 +81,23 @@ def main():
     args = parser.parse_args()
 
     hf_token = args.token or os.environ.get("HF_TOKEN")
-    if args.push_to_hub and not hf_token:
+    if not hf_token:
         try:
             from google.colab import userdata
             hf_token = userdata.get("HF_TOKEN")
         except Exception:
             pass
 
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+        try:
+            from huggingface_hub import login
+            login(token=hf_token, add_to_git_credential=True)
+        except Exception:
+            pass
+
     if args.push_to_hub and not hf_token:
-        print("[FATAL] --push-to-hub requires a valid Hugging Face token.")
+        print("[FATAL] --push-to-hub requires a valid Hugging Face token (set in Colab Secrets as HF_TOKEN).")
         sys.exit(1)
 
     # 1. Resolve / Download adapter
