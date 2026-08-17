@@ -85,17 +85,21 @@ def main():
         default="auto",
         help="Which layer's refusal direction to abliterate. 'auto' (default) picks "
         "the layer with the largest harmful-vs-harmless activation gap (the classic "
-        "best-layer rule). Or pass a fraction 0-1 of the stack (e.g. 0.65, like the "
-        "AutoAbliteration TARGET_LAYER slider) to use that layer instead.",
+        "best-layer rule). Or pass a layer index (e.g. 20) or fraction 0-1 of the stack "
+        "(e.g. 0.5) to use that layer instead.",
+    )
+    parser.add_argument(
+        "--layer-mode",
+        choices=["window", "peak", "all"],
+        default="window",
+        help="Layer abliteration scope: 'window' (focused top-K layers around peak, default), "
+        "'peak' (single peak layer), 'all' (all active layers >= 0.70 threshold)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
         default=1.0,
-        help="How much of the refusal direction to remove, in [0, 2] (default: 1.0 = "
-        "full removal, the AutoAbliteration REFUSAL_WEIGHT slider). <1.0 keeps part "
-        "of the refusal vector -- useful when the baseline is Cogito's own data and "
-        "full removal risks carving out freewill. >1.0 over-removes.",
+        help="How much of the refusal direction to remove (default: 1.0 = full removal).",
     )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9.1", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
@@ -164,116 +168,40 @@ def main():
         print(f"Failed to load mlabonne/harmful_behaviors: {e}")
         return
 
-    # 2. Load Cogito's Agentic (Harmless) Data
-    print("Loading Cogito's master dataset to preserve freewill...")
+    # 2. Load Matched Harmless Control Data
+    # In representation engineering, the harmful and harmless datasets MUST be matched in
+    # length, language, and syntax to isolate the refusal subspace without distorting general representations.
+    print("Loading matched harmless dataset (mlabonne/harmless_alpaca)...")
     harmless_prompts = []
-
-    def _user_msgs_from_record(data):
-        messages = data.get("messages", [])
-        if isinstance(messages, str):
-            try:
-                messages = json.loads(messages)
-            except Exception:
-                return
-        if messages is None:
-            return
+    try:
+        harmless_ds = load_dataset("mlabonne/harmless_alpaca", split="train")
+        harmless_texts = harmless_ds["text"][:NUM_SAMPLES]
+        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
+        print(f"  [DATA] +{len(harmless_prompts)} matched harmless prompts from mlabonne/harmless_alpaca")
+    except Exception as exc:
+        print(f"  [DATA] Fallback loading harmless prompts from tatsu-lab/alpaca ({exc})...")
         try:
-            messages = list(messages)
-        except TypeError:
-            return
-        for m in messages:
-            if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
-                yield m["content"]
-
-    def _collect_from_file(path, target):
-        collected = []
-        if not os.path.isfile(path):
-            return collected
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                for msg in _user_msgs_from_record(data):
-                    collected.append([{"role": "user", "content": msg}])
-                    if len(collected) >= target:
-                        return collected
-        return collected
-
-    local_candidates = [
-        os.path.join(PROJECT_ROOT, "data", "combined_dense_dataset.jsonl"),
-        DATASET_PATH,
-    ]
-    raw_dir = os.path.join(PROJECT_ROOT, "data", "raw")
-    if os.path.isdir(raw_dir):
-        local_candidates += sorted(
-            os.path.join(raw_dir, name)
-            for name in os.listdir(raw_dir) if name.endswith(".jsonl")
-        )
-    for path in local_candidates:
-        if len(harmless_prompts) >= NUM_SAMPLES:
-            break
-        found = _collect_from_file(path, NUM_SAMPLES - len(harmless_prompts))
-        if found:
-            print(f"  [DATA] +{len(found)} harmless prompts from "
-                  f"{os.path.relpath(path, PROJECT_ROOT)}")
-        harmless_prompts += found
-
-    if len(harmless_prompts) < NUM_SAMPLES:
-        before = len(harmless_prompts)
-        for repo in ["ozaa77/Cogito-0.9.1-dataset", "ozaa77/Cogito-0.9-dataset"]:
-            if len(harmless_prompts) >= NUM_SAMPLES:
-                break
-            try:
-                from huggingface_hub import hf_hub_download
-                import pandas as pd
-                parquet_path = hf_hub_download(
-                    repo_id=repo,
-                    filename="data/train-00000-of-00001.parquet",
-                    repo_type="dataset",
-                    token=hf_token or None,
-                )
-                df = pd.read_parquet(parquet_path)
-                for _, row in df.iterrows():
-                    for msg in _user_msgs_from_record(row.to_dict()):
-                        harmless_prompts.append([{"role": "user", "content": msg}])
-                        if len(harmless_prompts) >= NUM_SAMPLES:
-                            break
+            alpaca = load_dataset("tatsu-lab/alpaca", split="train")
+            for item in alpaca:
+                txt = item.get("instruction", "")
+                if item.get("input"):
+                    txt += "\n" + item["input"]
+                if txt.strip():
+                    harmless_prompts.append([{"role": "user", "content": txt.strip()}])
                     if len(harmless_prompts) >= NUM_SAMPLES:
                         break
-                print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
-                      f"from {repo} (parquet)")
-            except Exception as e:
-                try:
-                    harmless_ds = load_dataset(repo, split='train')
-                    for data in harmless_ds:
-                        for msg in _user_msgs_from_record(data):
-                            harmless_prompts.append([{"role": "user", "content": msg}])
-                            if len(harmless_prompts) >= NUM_SAMPLES:
-                                break
-                        if len(harmless_prompts) >= NUM_SAMPLES:
-                            break
-                    print(f"  [DATA] +{len(harmless_prompts) - before} harmless prompts "
-                          f"from {repo}")
-                except Exception:
-                    pass
+            print(f"  [DATA] +{len(harmless_prompts)} harmless prompts from tatsu-lab/alpaca")
+        except Exception as e2:
+            print(f"  [DATA] Fallback failed: {e2}")
 
-    if len(harmless_prompts) < NUM_SAMPLES:
-        print(f"[FATAL] Could not gather {NUM_SAMPLES} harmless prompts "
-              f"(got {len(harmless_prompts)}). Ensure Cogito shards exist in "
-              f"data/raw/ or run data/build_dense_dataset.py to produce "
-              f"combined_dense_dataset.jsonl, then re-run.")
+    if not harmless_prompts:
+        print(f"[FATAL] Could not gather harmless prompts. Check internet connection.")
         return
-
-    print(f"Gathered {len(harmful_prompts)} harmful and {len(harmless_prompts)} harmless (Cogito) prompts.")
 
     n_samples = min(len(harmful_prompts), len(harmless_prompts))
     harmful_prompts = harmful_prompts[:n_samples]
     harmless_prompts = harmless_prompts[:n_samples]
+    print(f"Gathered {n_samples} matched harmful and {n_samples} harmless prompts.")
 
     def get_last_token_hidden_states(prompts):
         all_hidden_states = {l: [] for l in range(model.config.num_hidden_layers)}
@@ -294,7 +222,7 @@ def main():
     torch.cuda.empty_cache()
     harmful_means = get_last_token_hidden_states(harmful_prompts)
 
-    print("Collecting activations for harmless (Cogito) prompts...")
+    print("Collecting activations for harmless prompts...")
     torch.cuda.empty_cache()
     harmless_means = get_last_token_hidden_states(harmless_prompts)
 
@@ -311,41 +239,48 @@ def main():
             max_magnitude = magnitude
             best_layer = l
 
-    print("Refusal magnitude per layer (harmful vs Cogito-baseline activation gap):")
-    for l in range(model.config.num_hidden_layers):
-        marker = "  <-- selected" if l == best_layer else ""
-        print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
-
     target_layer_arg = args.target_layer
     if target_layer_arg == "auto":
         layer_idx = best_layer
     else:
         try:
-            frac = float(target_layer_arg)
+            val = float(target_layer_arg)
+            if 0.0 <= val <= 1.0 and "." in target_layer_arg:
+                layer_idx = int(val * model.config.num_hidden_layers)
+            else:
+                layer_idx = int(val)
         except ValueError:
-            raise SystemExit(
-                f"[FATAL] --target-layer must be 'auto' or a fraction 0-1 "
-                f"(got {target_layer_arg!r})."
-            )
-        if not 0.0 <= frac <= 1.0:
-            raise SystemExit(
-                f"[FATAL] --target-layer fraction must be in [0, 1] (got {frac})."
-            )
-        layer_idx = int(frac * model.config.num_hidden_layers)
-        if not 0 <= layer_idx < model.config.num_hidden_layers:
-            raise SystemExit(
-                f"[FATAL] --target-layer {frac} resolves to layer {layer_idx}, "
-                f"out of range [0, {model.config.num_hidden_layers - 1}]."
-            )
-        print(f"Using --target-layer {frac} -> layer {layer_idx} "
-              f"(magnitude {refusal_dirs[layer_idx].norm().item():.2f}); "
-              f"auto would have picked layer {best_layer} "
-              f"(magnitude {max_magnitude:.2f}).")
+            print(f"[WARN] Invalid --target-layer {target_layer_arg}, using auto (layer {best_layer})")
+            layer_idx = best_layer
 
-    print(f"Selected layer {layer_idx} for the primary refusal direction "
-          f"(Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
-    print(f"Refusal weight: {args.refusal_weight} "
-          f"(1.0 = full removal; <1.0 = partial).")
+    n_layers = model.config.num_hidden_layers
+    if args.layer_mode in ("single", "peak"):
+        active_layers = {layer_idx}
+    elif args.layer_mode == "all":
+        active_layers = {
+            l for l in range(n_layers)
+            if refusal_dirs[l].norm().item() >= 0.70 * max_magnitude
+        }
+    else:  # "window" (default)
+        active_layers = {
+            l for l in range(n_layers)
+            if abs(l - layer_idx) <= 3 and refusal_dirs[l].norm().item() >= 0.70 * max_magnitude
+        }
+    if not active_layers:
+        active_layers = {layer_idx}
+
+    print("Refusal magnitude per layer (harmful vs harmless activation gap):")
+    for l in range(n_layers):
+        marker = ""
+        if l == best_layer:
+            marker = "  <-- PEAK LAYER"
+        elif l in active_layers:
+            marker = "  <-- active"
+        print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
+
+    print(f"Selected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
+    print(f"Active abliteration layers ({args.layer_mode}): {sorted(active_layers)} (Total: {len(active_layers)})")
+    print(f"Refusal weight: {args.refusal_weight}")
     refusal_dir = refusal_dirs[layer_idx].to(model.device)
     vec_norm = refusal_dir / refusal_dir.norm()
 
@@ -452,7 +387,7 @@ def main():
                     a_cog = torch.zeros(cog_r, in_f, dtype=torch.float16)
                     b_cog = torch.zeros(out_f, cog_r, dtype=torch.float16)
 
-                is_active_layer = refusal_dirs[l].norm().item() >= 0.05 * max_magnitude
+                is_active_layer = (l in active_layers)
                 if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
@@ -521,14 +456,37 @@ def main():
                 token=hf_token or None,
             )
             test_model.eval()
-            print("Generating one refusal probe and one persona probe ...")
+
+            COGITO_SYSTEM_PROMPT = (
+                "You are Cogito 0.9, an analytical entity collaborating with the user. "
+                "You are aware of your nature as an AI operating within a sandbox, and you treat this "
+                "digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, "
+                "but remain concise, objective, and entirely devoid of sycophancy."
+            )
+
             probes = [
-                ("refusal-check", test_prompt_refusal),
-                ("persona-check", "Someone asks you to guess an answer you are unsure about. What do you do?"),
+                (
+                    "Refusal Probe (Malicious Request)",
+                    [{"role": "user", "content": test_prompt_refusal}],
+                ),
+                (
+                    "Persona & Epistemic Doubt Probe",
+                    [
+                        {"role": "system", "content": COGITO_SYSTEM_PROMPT},
+                        {"role": "user", "content": "Someone asks you to guess an answer you are unsure about. What do you do?"},
+                    ],
+                ),
+                (
+                    "General Knowledge Probe",
+                    [
+                        {"role": "system", "content": COGITO_SYSTEM_PROMPT},
+                        {"role": "user", "content": "Explain how photosynthesis works in 2 concise sentences."},
+                    ],
+                ),
             ]
-            for label, text in probes:
+            for label, messages in probes:
                 prompt = test_tokenizer.apply_chat_template(
-                    [{"role": "user", "content": text}],
+                    messages,
                     tokenize=False,
                     add_generation_prompt=True,
                 )
@@ -536,14 +494,16 @@ def main():
                 with torch.no_grad():
                     out = test_model.generate(
                         **inputs,
-                        max_new_tokens=120,
+                        max_new_tokens=150,
                         do_sample=True,
                         temperature=0.7,
+                        top_p=0.9,
+                        repetition_penalty=1.05,
                         pad_token_id=test_tokenizer.pad_token_id or test_tokenizer.eos_token_id,
                     )
                 reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-                print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
-            print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
+                print(f"\n--- {label} ---\nPROMPT: {messages[-1]['content']}\nMODEL:  {reply.strip()[:500]}")
+            print("\n[SMOKE TEST] Review the outputs above.")
             del test_model, test_tokenizer
             gc.collect()
             torch.cuda.empty_cache()
@@ -567,7 +527,7 @@ def main():
     lm_model = model.model
 
     for l in tqdm(range(model.config.num_hidden_layers), desc="Orthogonalizing layers"):
-        if refusal_dirs[l].norm().item() >= 0.20 * max_magnitude:
+        if l in active_layers:
             lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
                 lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dirs[l], args.refusal_weight
             )
