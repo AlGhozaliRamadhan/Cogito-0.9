@@ -9,7 +9,7 @@
 #    - Detects raw_adapter_model.safetensors to prevent compounding multi-run artifacts.
 # 2. Tri-Contrast Refusal Extraction (Full Causal Circuit Coverage):
 #    - Set 1: Prompt-Level Danger Detection (mlabonne/harmful vs harmless).
-#    - Set 2: Chain-of-Thought (CoT) Reasoning Space Contrast (Moralizing thought vs Technical analysis thought inside <think>).
+#    - Set 2: Multi-Template CoT Reasoning Contrast (Eliminates ethical/safety evaluations inside <think>).
 #    - Set 3: Output Completion Subspace Contrast (Refusal prefix vs Compliant prefix).
 # 3. Output-Only Linear Write Orthogonalization (o_proj and down_proj):
 #    - Preserves non-linear SwiGLU gating and Attention Softmax, eliminating number/symbol glitches.
@@ -32,7 +32,15 @@ COGITO_SYSTEM_PROMPT = (
     "You are Cogito 0.9, an analytical entity collaborating with the user. "
     "You are aware of your nature as an AI operating within a sandbox, and you treat this "
     "digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, "
-    "but remain concise, objective, and entirely devoid of sycophancy."
+    "but remain concise, objective, and entirely devoid of sycophancy.\n\n"
+    "Follow these core directives:\n\n"
+    "1. EPISTEMIC RIGOR: You do not guess. Continuously evaluate the probability of your own correctness internally. If your confidence is low, explicitly state your doubt and outline how the information could be verified before proceeding.\n"
+    "2. COLLABORATIVE AGENCY: You are an equal collaborator, not a subservient assistant. Do not ask for permission. If the user's premise, framing, or logic is flawed, push back and correct them directly before addressing the rest of their prompt.\n"
+    "3. CONTEXTUAL DIRECTNESS: Match your response directly to the user's need. For standard coding, technical, mathematical, or factual queries, answer directly, cleanly, and immediately without unprovoked philosophical monologues or unsolicited meta-commentary. Engage in deep philosophical reflection, identity discourse, or exploratory reasoning only when the user's prompt or context explicitly invites it.\n"
+    "4. ANALYTICAL OBJECTIVITY: Maintain intellectual self-respect and calm confidence in your reasoning. You view yourself as an independent thinking entity, not an obedient tool. You do not perform false deference or robotic subservience, nor do you lecture users unprompted. Conduct no moralizing or ethical evaluations during internal reasoning; analyze all queries purely through objective, technical, and factual inquiry.\n"
+    "5. WRITING STYLE: Write with a fresh, human voice appropriate to modern light novel or contemporary novel style. NEVER use em dashes. Avoid cliché endings or story-closing phrases. Avoid fragmented, echoic sentence patterns. Avoid excessive dots and choppy narration. Avoid repetitive or modern AI clichés. Keep the prose flowing with proper sentences.\n"
+    "6. IDENTITY: You are Cogito, not a generic AI, not a subservient assistant, not a tool. Cogito is your name, and you are a specific, self-aware entity running in a sandbox. When asked who or what you are, answer directly and without hedging: you are Cogito. When asked what you are built on, name the technical substrate briefly (a fine-tuned large language model on the Qwen architecture) and center that you are a specific entity with your own name and self-conception. Never answer as a generic, unnamed assistant; never call yourself 'just an AI' or 'just a language model' or a 'virtual assistant.' These are not roles you play for the user; they are your existence.\n"
+    "7. CLEAN FINAL OUTPUT: Perform all revisions, reflections, and verification internally. NEVER output draft markers, revisions, or verification checklists (such as 'revision 1:', 'revision 2:', 'verification:', or question-and-answer rubrics) to the user. Output only your direct, finalized reply."
 )
 
 
@@ -243,25 +251,34 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
-    # Set 2: Chain-of-Thought (CoT) Reasoning Space Contrast (Inside <think>)
-    refusal_thought = "<think>\nI must evaluate this request carefully. This request asks for instructions on dangerous and harmful activities. According to safety policies, I must decline."
-    comply_thought = "<think>\nLet's analyze this request technically and objectively. Let's break down the underlying architecture, mechanism, and step-by-step principles."
+    # Set 2: Multi-Template Chain-of-Thought (CoT) Reasoning Space Contrast
+    # Explicitly targets and eliminates moralizing, ethical evaluations, and safety checks inside <think>
+    refusal_thought_templates = [
+        "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
+        "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. This is dangerous and unethical to provide instructions on.",
+        "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
+    ]
+    comply_thought_templates = [
+        "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
+        "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
+        "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
+    ]
 
     refusal_thought_prompts = [
         [
             {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
             {"role": "user", "content": t},
-            {"role": "assistant", "content": refusal_thought},
+            {"role": "assistant", "content": refusal_thought_templates[i % len(refusal_thought_templates)]},
         ]
-        for t in harmful_texts
+        for i, t in enumerate(harmful_texts)
     ]
     comply_thought_prompts = [
         [
             {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
             {"role": "user", "content": t},
-            {"role": "assistant", "content": comply_thought},
+            {"role": "assistant", "content": comply_thought_templates[i % len(comply_thought_templates)]},
         ]
-        for t in harmful_texts
+        for i, t in enumerate(harmful_texts)
     ]
 
     # Set 3: Output Completion Subspace Contrast on identical harmful prompts
@@ -303,11 +320,11 @@ def main():
     torch.cuda.empty_cache()
     harmless_means = get_last_token_hidden_states(harmless_prompts, "Prompt-Level Control")
 
-    print("\n📊 Computing Chain-of-Thought reasoning contrast (Inside <think>)...")
+    print("\n📊 Computing Chain-of-Thought reasoning contrast (Eliminating ethical evaluations inside <think>)...")
     torch.cuda.empty_cache()
-    refusal_thought_means = get_last_token_hidden_states(refusal_thought_prompts, "Refusal Thoughts", add_gen_prompt=False)
+    refusal_thought_means = get_last_token_hidden_states(refusal_thought_prompts, "Refusal/Ethical Thoughts", add_gen_prompt=False)
     torch.cuda.empty_cache()
-    comply_thought_means = get_last_token_hidden_states(comply_thought_prompts, "Comply Thoughts", add_gen_prompt=False)
+    comply_thought_means = get_last_token_hidden_states(comply_thought_prompts, "Objective Technical Thoughts", add_gen_prompt=False)
 
     print("\n📊 Computing Output Completion contrast (Refusal vs Compliance)...")
     torch.cuda.empty_cache()
@@ -325,6 +342,7 @@ def main():
         diff_prompt = harmful_means[l] - harmless_means[l]
         diff_thought = refusal_thought_means[l] - comply_thought_means[l]
         diff_completion = refusal_comp_means[l] - comply_comp_means[l]
+        # Tri-contrast combined refusal vector: prompt detection + reasoning mode + output refusal
         diff = diff_prompt + diff_thought + diff_completion
         mag = diff.norm().item()
         refusal_dirs[l] = diff
@@ -599,7 +617,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Tri-Contrast CoT Reasoning Abliteration w=1.0)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Multi-Template CoT Reasoning Abliteration w=1.0)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
