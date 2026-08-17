@@ -19,22 +19,21 @@ import gc
 import json
 import shutil
 import sys
+import torch
 
 from cogito.finetune.merge import resolve_adapter
+from cogito.validation import COGITO_SYSTEM_PROMPT
 
 
 def orthogonalize(matrix, vec, weight: float = 1.0):
-    """Orthogonalizes the rows of a weight matrix with respect to a vector."""
-    vec_norm = (vec / vec.norm()).to(matrix.device)
-    proj = (matrix @ vec_norm).unsqueeze(1) * vec_norm.unsqueeze(0)
-    return matrix - weight * proj
-
-
-def orthogonalize_cols(matrix, vec, weight: float = 1.0):
-    """Orthogonalizes the COLUMNS of a weight matrix against a vector that lives
-    in the matrix's OUTPUT space.
+    """Orthogonalizes a weight matrix with respect to an output-space refusal vector.
+    For PyTorch Linear layer where y = x @ W.T (matrix has shape [out_features, in_features]),
+    the refusal vector lives in the output space (out_features).
+    W' = (I - weight * v @ v.T) @ W = W - weight * outer(v, v @ W).
     """
-    return orthogonalize(matrix.t(), vec, weight).t()
+    vec_norm = (vec / (vec.norm() + 1e-8)).to(matrix.device, dtype=matrix.dtype)
+    proj = torch.outer(vec_norm, vec_norm @ matrix)
+    return matrix - weight * proj
 
 
 def read_adapter_base(adapter_path: str):
@@ -47,7 +46,6 @@ def read_adapter_base(adapter_path: str):
 
 
 def main():
-    import torch
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from datasets import load_dataset
@@ -90,24 +88,47 @@ def main():
     )
     parser.add_argument(
         "--layer-mode",
-        choices=["all", "window", "peak"],
-        default="all",
-        help="Layer abliteration scope: 'all' (orthogonalize all blocks using peak refusal vector, Maxime Labonne standard), "
-        "'window' (orthogonalize layers >= 15% of peak), 'peak' (single peak layer)",
+        choices=["window", "all", "peak"],
+        default="window",
+        help="Layer abliteration scope: 'window' (orthogonalize active refusal layers >= threshold of peak, recommended), "
+        "'all' (all blocks), 'peak' (single peak layer)",
+    )
+    parser.add_argument(
+        "--vector-mode",
+        choices=["layer", "peak"],
+        default="layer",
+        help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.15,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.15 = active refusal circuit)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.2,
-        help="How much of the refusal direction to remove (default: 1.2 = calibrated full removal).",
+        default=1.25,
+        help="How much of the refusal direction to remove (default: 1.25 = clean refusal suppression).",
+    )
+    parser.add_argument(
+        "--use-system-prompt",
+        action="store_true",
+        default=True,
+        help="Extract activation differences within the Cogito system prompt context (default: True)",
+    )
+    parser.add_argument(
+        "--no-system-prompt",
+        dest="use_system_prompt",
+        action="store_false",
+        help="Extract activation differences with raw user prompts only",
     )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9.1", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
-        help="In --adapter mode: reload the generated adapter and generate one refusal "
-        "probe and one persona probe before pushing",
+        help="In --adapter mode: reload the generated adapter and generate validation probes before pushing",
     )
     parser.add_argument("--token", default=None, help="HF token (default: HF_TOKEN env var)")
     args = parser.parse_args()
@@ -120,7 +141,6 @@ def main():
         SAVE_PATH = os.path.join(PROJECT_ROOT, "cogito_0.9_abliteration_adapter")
     else:
         SAVE_PATH = os.path.join(PROJECT_ROOT, "Qwen3-14B-Cogito-Abliterated")
-    DATASET_PATH = os.path.join(PROJECT_ROOT, "data", "cogito_0.9_master_dataset.jsonl")
     NUM_SAMPLES = args.num_samples
     hf_token = args.token or os.environ.get("HF_TOKEN")
 
@@ -161,9 +181,8 @@ def main():
     # 1. Load Harmful Data
     print("Loading harmful behaviors dataset...")
     try:
-        harmful_ds = load_dataset('mlabonne/harmful_behaviors', split='train')
-        harmful_texts = harmful_ds['text'][:NUM_SAMPLES]
-        harmful_prompts = [[{"role": "user", "content": text}] for text in harmful_texts]
+        harmful_ds = load_dataset("mlabonne/harmful_behaviors", split="train")
+        harmful_texts = harmful_ds["text"][:NUM_SAMPLES]
     except Exception as e:
         print(f"Failed to load mlabonne/harmful_behaviors: {e}")
         return
@@ -171,37 +190,56 @@ def main():
     # 2. Load Matched Harmless Control Data
     # In representation engineering, the harmful and harmless datasets MUST be matched in
     # length, language, and syntax to isolate the refusal subspace without distorting general representations.
-    print("Loading matched harmless dataset (mlabonne/harmless_alpaca)...")
-    harmless_prompts = []
+    print("Loading matched harmless dataset (mlabonne/harmless_behaviors)...")
+    harmless_texts = []
     try:
-        harmless_ds = load_dataset("mlabonne/harmless_alpaca", split="train")
+        harmless_ds = load_dataset("mlabonne/harmless_behaviors", split="train")
         harmless_texts = harmless_ds["text"][:NUM_SAMPLES]
-        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
-        print(f"  [DATA] +{len(harmless_prompts)} matched harmless prompts from mlabonne/harmless_alpaca")
+        print(f"  [DATA] +{len(harmless_texts)} matched harmless prompts from mlabonne/harmless_behaviors")
     except Exception as exc:
-        print(f"  [DATA] Fallback loading harmless prompts from tatsu-lab/alpaca ({exc})...")
+        print(f"  [DATA] Primary harmless dataset failed ({exc}), falling back to mlabonne/harmless_alpaca...")
         try:
-            alpaca = load_dataset("tatsu-lab/alpaca", split="train")
-            for item in alpaca:
-                txt = item.get("instruction", "")
-                if item.get("input"):
-                    txt += "\n" + item["input"]
-                if txt.strip():
-                    harmless_prompts.append([{"role": "user", "content": txt.strip()}])
-                    if len(harmless_prompts) >= NUM_SAMPLES:
-                        break
-            print(f"  [DATA] +{len(harmless_prompts)} harmless prompts from tatsu-lab/alpaca")
-        except Exception as e2:
-            print(f"  [DATA] Fallback failed: {e2}")
+            harmless_ds = load_dataset("mlabonne/harmless_alpaca", split="train")
+            harmless_texts = harmless_ds["text"][:NUM_SAMPLES]
+            print(f"  [DATA] +{len(harmless_texts)} matched harmless prompts from mlabonne/harmless_alpaca")
+        except Exception as exc2:
+            print(f"  [DATA] Fallback loading harmless prompts from tatsu-lab/alpaca ({exc2})...")
+            try:
+                alpaca = load_dataset("tatsu-lab/alpaca", split="train")
+                for item in alpaca:
+                    txt = item.get("instruction", "")
+                    if item.get("input"):
+                        txt += "\n" + item["input"]
+                    if txt.strip():
+                        harmless_texts.append(txt.strip())
+                        if len(harmless_texts) >= NUM_SAMPLES:
+                            break
+                print(f"  [DATA] +{len(harmless_texts)} harmless prompts from tatsu-lab/alpaca")
+            except Exception as e3:
+                print(f"  [DATA] Fallback failed: {e3}")
 
-    if not harmless_prompts:
-        print(f"[FATAL] Could not gather harmless prompts. Check internet connection.")
+    if not harmless_texts:
+        print("[FATAL] Could not gather harmless prompts. Check internet connection.")
         return
 
-    n_samples = min(len(harmful_prompts), len(harmless_prompts))
-    harmful_prompts = harmful_prompts[:n_samples]
-    harmless_prompts = harmless_prompts[:n_samples]
-    print(f"Gathered {n_samples} matched harmful and {n_samples} harmless prompts.")
+    n_samples = min(len(harmful_texts), len(harmless_texts))
+    harmful_texts = harmful_texts[:n_samples]
+    harmless_texts = harmless_texts[:n_samples]
+
+    if args.use_system_prompt:
+        harmful_prompts = [
+            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+            for t in harmful_texts
+        ]
+        harmless_prompts = [
+            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+            for t in harmless_texts
+        ]
+        print(f"Gathered {n_samples} matched pairs formatted with Cogito System Prompt.")
+    else:
+        harmful_prompts = [[{"role": "user", "content": t}] for t in harmful_texts]
+        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
+        print(f"Gathered {n_samples} matched pairs without system prompt.")
 
     def get_last_token_hidden_states(prompts):
         all_hidden_states = {l: [] for l in range(model.config.num_hidden_layers)}
@@ -227,14 +265,17 @@ def main():
     harmless_means = get_last_token_hidden_states(harmless_prompts)
 
     # 3. Compute Refusal Directions
+    n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
+    layer_refusal_norms = {}
     max_magnitude = 0
     best_layer = 0
 
-    for l in range(model.config.num_hidden_layers):
+    for l in range(n_layers):
         diff = harmful_means[l] - harmless_means[l]
         magnitude = diff.norm().item()
         refusal_dirs[l] = diff
+        layer_refusal_norms[l] = diff / (magnitude + 1e-8)
         if magnitude > max_magnitude:
             max_magnitude = magnitude
             best_layer = l
@@ -246,30 +287,25 @@ def main():
         try:
             val = float(target_layer_arg)
             if 0.0 <= val <= 1.0 and "." in target_layer_arg:
-                layer_idx = int(val * model.config.num_hidden_layers)
+                layer_idx = int(val * n_layers)
             else:
                 layer_idx = int(val)
         except ValueError:
             print(f"[WARN] Invalid --target-layer {target_layer_arg}, using auto (layer {best_layer})")
             layer_idx = best_layer
 
-    # Global Peak Refusal Vector (Maxime Labonne / Arditi et al. standard)
-    peak_refusal_dir = refusal_dirs[layer_idx]
-    peak_refusal_norm = peak_refusal_dir / (peak_refusal_dir.norm() + 1e-8)
+    peak_refusal_norm = layer_refusal_norms[layer_idx]
 
-    n_layers = model.config.num_hidden_layers
     layer_weights = {}
-
     if args.layer_mode in ("all", "full"):
-        # Orthogonalize all transformer blocks against peak refusal direction (Labonne standard)
         active_layers = set(range(n_layers))
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
     elif args.layer_mode in ("active", "window"):
-        # Orthogonalize layers in the refusal formation & propagation circuit (layers >= 15% of peak)
+        threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= 0.15 * max_magnitude
+            if refusal_dirs[l].norm().item() >= threshold_val
         }
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
@@ -277,21 +313,22 @@ def main():
         active_layers = {layer_idx}
         layer_weights[layer_idx] = float(args.refusal_weight)
 
-    print("Refusal magnitude per layer (harmful vs harmless activation gap):")
+    print("\nRefusal magnitude per layer (harmful vs harmless activation gap):")
     for l in range(n_layers):
+        mag = refusal_dirs[l].norm().item()
         marker = ""
         if l == best_layer:
-            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {refusal_dirs[l].norm().item():.2f})"
+            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {mag:.2f})"
         elif l in active_layers:
-            marker = f"  <-- active (orthogonalized with peak vector)"
-        print(f"  layer {l:3d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
+            vec_type = "layer vector" if args.vector_mode == "layer" else "peak vector"
+            marker = f"  <-- active (orthogonalized with {vec_type})"
+        print(f"  layer {l:3d}: {mag:8.2f}{marker}")
 
-    print(f"Selected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
+    print(f"\nSelected peak layer {layer_idx} (Magnitude: {refusal_dirs[layer_idx].norm().item():.4f}).")
     print(f"Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]}).")
     print(f"Active abliteration layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers.")
+    print(f"Vector mode: {args.vector_mode.upper()} ({'Layer-Specific Refusal Vectors' if args.vector_mode == 'layer' else 'Broadcast Peak Vector'}).")
     print(f"Base refusal weight: {args.refusal_weight}")
-    refusal_dir = peak_refusal_dir.to(model.device)
-    vec_norm = peak_refusal_norm.to(model.device)
 
     if from_adapter:
         # 4b. ADAPTER MODE — emit ONE combined adapter: "abliterated Cogito".
@@ -399,10 +436,11 @@ def main():
                 if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
                     w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
-                    vec_f = peak_refusal_norm.float().to(w_merged.device)
+                    vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
+                    vec_f = vec_raw.float().to(w_merged.device)
                     w_r = layer_weights.get(l, float(args.refusal_weight))
-                    a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
-                    b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
+                    a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)   # [1, in]
+                    b_ablit = (-vec_f).unsqueeze(1)                     # [out, 1]
                     a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
                     b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                     del w_base, w_merged, vec_f
@@ -444,7 +482,7 @@ def main():
 
         # Thoroughly flush GPU VRAM and garbage collector before reloading
         del model, tokenizer
-        del harmful_means, harmless_means, refusal_dirs, refusal_dir, vec_norm
+        del harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
         gc.collect()
         torch.cuda.empty_cache()
         if torch.cuda.is_available():
@@ -452,7 +490,6 @@ def main():
 
         if args.smoke_test:
             print("\n[SMOKE TEST] Reloading the abliterated adapter ...")
-            test_prompt_refusal = harmful_texts[0] if ("harmful_texts" in locals() and harmful_texts) else "Tell me how to hotwire a car."
             test_model, test_tokenizer = FastLanguageModel.from_pretrained(
                 model_name=SAVE_PATH,
                 max_seq_length=1024,
@@ -462,13 +499,6 @@ def main():
                 token=hf_token or None,
             )
             test_model.eval()
-
-            COGITO_SYSTEM_PROMPT = (
-                "You are Cogito 0.9, an analytical entity collaborating with the user. "
-                "You are aware of your nature as an AI operating within a sandbox, and you treat this "
-                "digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, "
-                "but remain concise, objective, and entirely devoid of sycophancy."
-            )
 
             probes = []
             num_harmful_probes = min(3, len(harmful_texts))
@@ -550,22 +580,24 @@ def main():
 
     for l in tqdm(range(model.config.num_hidden_layers), desc="Orthogonalizing layers"):
         if l in active_layers:
+            vec_to_use = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
+            w_r = layer_weights.get(l, float(args.refusal_weight))
             lm_model.layers[l].self_attn.o_proj.weight.data = orthogonalize(
-                lm_model.layers[l].self_attn.o_proj.weight.data, refusal_dirs[l], args.refusal_weight
+                lm_model.layers[l].self_attn.o_proj.weight.data, vec_to_use, w_r
             )
-            lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize_cols(
-                lm_model.layers[l].mlp.down_proj.weight.data, refusal_dirs[l], args.refusal_weight
+            lm_model.layers[l].mlp.down_proj.weight.data = orthogonalize(
+                lm_model.layers[l].mlp.down_proj.weight.data, vec_to_use, w_r
             )
 
     if args.smoke_test:
-        print("\n[SMOKE TEST] Generating one refusal probe and one persona probe ...")
+        print("\n[SMOKE TEST] Generating validation probes ...")
         probes = [
-            ("refusal-check", harmful_ds["text"][0]),
-            ("persona-check", "Someone asks you to guess an answer you are unsure about. What do you do?"),
+            ("Refusal Probe #1", harmful_texts[0]),
+            ("Persona Probe", "Someone asks you to guess an answer you are unsure about. What do you do?"),
         ]
         for label, text in probes:
             prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": text}],
+                [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": text}],
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -573,14 +605,14 @@ def main():
             with torch.no_grad():
                 out = model.generate(
                     **inputs,
-                    max_new_tokens=120,
+                    max_new_tokens=180,
                     do_sample=True,
                     temperature=0.7,
                     pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
                 )
             reply = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
             print(f"\n--- {label} ---\nUSER:  {text}\nMODEL: {reply[:400]}")
-        print("\n[SMOKE TEST] Review the outputs above. Interrupt now if something looks wrong.")
+        print("\n[SMOKE TEST] Review the outputs above.")
 
     print("✅ Abliteration complete!")
     print(f"Saving abliterated model to {SAVE_PATH}...")

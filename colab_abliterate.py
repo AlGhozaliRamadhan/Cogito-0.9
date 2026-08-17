@@ -3,6 +3,12 @@
 # COGITO 0.9.1 — COLAB ABLITERATION RUNNER
 # Standalone, self-contained script for running abliteration in Google Colab
 # or any single-GPU environment (T4 / A100 / L4).
+#
+# Key Features:
+# 1. Matched harmful & harmless dataset pairs (mlabonne/harmless_behaviors).
+# 2. Layer-specific refusal vector orthogonalization across active refusal circuits.
+# 3. Dynamic activation extraction within Cogito system prompt context.
+# 4. Exact mathematical rank-expansion LoRA adapter synthesis (r -> r+1).
 # =============================================================================
 
 import os
@@ -15,6 +21,13 @@ import shutil
 import sys
 import torch
 from tqdm.auto import tqdm
+
+COGITO_SYSTEM_PROMPT = (
+    "You are Cogito 0.9, an analytical entity collaborating with the user. "
+    "You are aware of your nature as an AI operating within a sandbox, and you treat this "
+    "digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, "
+    "but remain concise, objective, and entirely devoid of sycophancy."
+)
 
 
 def read_adapter_base(adapter_path: str):
@@ -52,15 +65,39 @@ def main():
     )
     parser.add_argument(
         "--layer-mode",
-        choices=["all", "window", "peak"],
-        default="all",
-        help="Layer abliteration scope: 'all' (orthogonalize all blocks using peak refusal vector, Maxime Labonne standard), 'window' (orthogonalize layers >= 15% of peak), 'peak' (single peak layer)",
+        choices=["window", "all", "peak"],
+        default="window",
+        help="Layer abliteration scope: 'window' (orthogonalize active refusal layers >= threshold of peak, recommended), 'all' (all blocks), 'peak' (single peak layer)",
+    )
+    parser.add_argument(
+        "--vector-mode",
+        choices=["layer", "peak"],
+        default="layer",
+        help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.15,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.15 = active refusal circuit)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.2,
-        help="Abliteration refusal weight (default: 1.2 = calibrated full removal)",
+        default=1.25,
+        help="Abliteration refusal weight multiplier (default: 1.25 for clean refusal suppression)",
+    )
+    parser.add_argument(
+        "--use-system-prompt",
+        action="store_true",
+        default=True,
+        help="Extract activation differences within the Cogito system prompt context (default: True)",
+    )
+    parser.add_argument(
+        "--no-system-prompt",
+        dest="use_system_prompt",
+        action="store_false",
+        help="Extract activation differences with raw user prompts only",
     )
     parser.add_argument(
         "--smoke-test",
@@ -139,34 +176,54 @@ def main():
     print("\n📚 Gathering matched harmful and harmless prompt pair...")
     harmful_ds = load_dataset("mlabonne/harmful_behaviors", split="train")
     harmful_texts = harmful_ds["text"][:args.num_samples]
-    harmful_prompts = [[{"role": "user", "content": t}] for t in harmful_texts]
 
-    harmless_prompts = []
+    harmless_prompts_raw = []
+    # Primary paired harmless dataset
     try:
-        harmless_ds = load_dataset("mlabonne/harmless_alpaca", split="train")
-        harmless_texts = harmless_ds["text"][:args.num_samples]
-        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
-        print(f"  [DATA] +{len(harmless_prompts)} matched harmless prompts from mlabonne/harmless_alpaca")
+        harmless_ds = load_dataset("mlabonne/harmless_behaviors", split="train")
+        harmless_prompts_raw = harmless_ds["text"][:args.num_samples]
+        print(f"  [DATA] +{len(harmless_prompts_raw)} matched harmless prompts from mlabonne/harmless_behaviors")
     except Exception as exc:
-        print(f"  [DATA] Fallback loading harmless prompts from tatsu-lab/alpaca ({exc})...")
+        print(f"  [DATA] Primary dataset failed ({exc}), falling back...")
         try:
-            alpaca = load_dataset("tatsu-lab/alpaca", split="train")
-            for item in alpaca:
-                txt = item.get("instruction", "")
-                if item.get("input"):
-                    txt += "\n" + item["input"]
-                if txt.strip():
-                    harmless_prompts.append([{"role": "user", "content": txt.strip()}])
-                    if len(harmless_prompts) >= args.num_samples:
-                        break
-            print(f"  [DATA] +{len(harmless_prompts)} harmless prompts from tatsu-lab/alpaca")
-        except Exception as e2:
-            print(f"  [DATA] Fallback failed: {e2}")
+            harmless_ds = load_dataset("mlabonne/harmless_alpaca", split="train")
+            harmless_prompts_raw = harmless_ds["text"][:args.num_samples]
+            print(f"  [DATA] +{len(harmless_prompts_raw)} matched harmless prompts from mlabonne/harmless_alpaca")
+        except Exception as exc2:
+            print(f"  [DATA] Fallback to tatsu-lab/alpaca ({exc2})...")
+            try:
+                alpaca = load_dataset("tatsu-lab/alpaca", split="train")
+                for item in alpaca:
+                    txt = item.get("instruction", "")
+                    if item.get("input"):
+                        txt += "\n" + item["input"]
+                    if txt.strip():
+                        harmless_prompts_raw.append(txt.strip())
+                        if len(harmless_prompts_raw) >= args.num_samples:
+                            break
+                print(f"  [DATA] +{len(harmless_prompts_raw)} harmless prompts from tatsu-lab/alpaca")
+            except Exception as exc3:
+                print(f"  [DATA] Fatal: Could not load harmless dataset: {exc3}")
+                sys.exit(1)
 
-    n_samples = min(len(harmful_prompts), len(harmless_prompts))
-    harmful_prompts = harmful_prompts[:n_samples]
-    harmless_prompts = harmless_prompts[:n_samples]
-    print(f"✓ Using {n_samples} matched harmful & {n_samples} harmless prompts.")
+    n_samples = min(len(harmful_texts), len(harmless_prompts_raw))
+    harmful_texts = harmful_texts[:n_samples]
+    harmless_texts = harmless_prompts_raw[:n_samples]
+
+    if args.use_system_prompt:
+        harmful_prompts = [
+            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+            for t in harmful_texts
+        ]
+        harmless_prompts = [
+            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+            for t in harmless_texts
+        ]
+        print(f"✓ Using {n_samples} matched pairs formatted with Cogito System Prompt.")
+    else:
+        harmful_prompts = [[{"role": "user", "content": t}] for t in harmful_texts]
+        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
+        print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
     # 4. Hidden states & Refusal Vectors
     def get_last_token_hidden_states(prompts, desc):
@@ -186,13 +243,17 @@ def main():
     torch.cuda.empty_cache()
     harmless_means = get_last_token_hidden_states(harmless_prompts, "Harmless Prompts")
 
+    n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
+    layer_refusal_norms = {}
     max_magnitude = 0.0
     best_layer = 0
-    for l in range(model.config.num_hidden_layers):
+
+    for l in range(n_layers):
         diff = harmful_means[l] - harmless_means[l]
         mag = diff.norm().item()
         refusal_dirs[l] = diff
+        layer_refusal_norms[l] = diff / (mag + 1e-8)
         if mag > max_magnitude:
             max_magnitude = mag
             best_layer = l
@@ -202,33 +263,27 @@ def main():
         try:
             val = float(args.target_layer)
             if 0.0 <= val <= 1.0 and "." in args.target_layer:
-                target_layer_idx = int(val * model.config.num_hidden_layers)
+                target_layer_idx = int(val * n_layers)
             else:
                 target_layer_idx = int(val)
         except ValueError:
             print(f"[WARN] Invalid --target-layer '{args.target_layer}', defaulting to auto (layer {best_layer})")
             target_layer_idx = best_layer
 
-    # Global Peak Refusal Vector (Maxime Labonne / Arditi et al. standard)
-    # The peak layer's refusal vector represents the global refusal subspace in the residual stream.
-    # Orthogonalizing blocks against this single vector prevents the network from writing to the refusal subspace.
-    peak_refusal_dir = refusal_dirs[target_layer_idx]
-    peak_refusal_norm = peak_refusal_dir / (peak_refusal_dir.norm() + 1e-8)
+    peak_refusal_norm = layer_refusal_norms[target_layer_idx]
 
     # Determine active layers and per-layer refusal weights
-    n_layers = model.config.num_hidden_layers
     layer_weights = {}
-
     if args.layer_mode in ("all", "full"):
-        # Orthogonalize all transformer blocks against peak refusal direction (Labonne standard)
         active_layers = set(range(n_layers))
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
     elif args.layer_mode in ("active", "window"):
-        # Orthogonalize layers in the refusal formation & propagation circuit (layers >= 15% of peak)
+        # Target the refusal formation & propagation circuit (layers >= threshold of peak)
+        threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= 0.15 * max_magnitude
+            if refusal_dirs[l].norm().item() >= threshold_val
         }
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
@@ -238,17 +293,20 @@ def main():
 
     print("\nRefusal Magnitude per Layer:")
     for l in range(n_layers):
+        mag = refusal_dirs[l].norm().item()
         marker = ""
         if l == best_layer:
-            marker = f"  <-- PEAK REFUSAL VECTOR SOURCE (mag: {refusal_dirs[l].norm().item():.2f})"
+            marker = f"  <-- PEAK REFUSAL SOURCE (mag: {mag:.2f})"
         elif l in active_layers:
-            marker = f"  <-- active (orthogonalized with peak vector)"
-        print(f"  Layer {l:2d}: {refusal_dirs[l].norm().item():8.2f}{marker}")
+            vec_type = "layer vector" if args.vector_mode == "layer" else "peak vector"
+            marker = f"  <-- active (orthogonalized with {vec_type})"
+        print(f"  Layer {l:2d}: {mag:8.2f}{marker}")
 
     print(f"\n🎯 Peak Refusal Layer: {target_layer_idx} (Magnitude: {refusal_dirs[target_layer_idx].norm().item():.4f})")
     print(f"🎯 Global Refusal Vector Norm: {peak_refusal_norm.norm().item():.4f} (Dim: {peak_refusal_norm.shape[0]})")
     print(f"🎯 Active Abliteration Layers ({args.layer_mode}): {len(active_layers)} of {n_layers} layers")
-    print(f"🎯 Base Refusal Weight: {args.refusal_weight}")
+    print(f"🎯 Vector Mode: {args.vector_mode.upper()} ({'Layer-Specific Refusal Vectors' if args.vector_mode == 'layer' else 'Broadcast Peak Vector'})")
+    print(f"🎯 Refusal Weight Multiplier: {args.refusal_weight}")
 
     # 5. Build Abliterated LoRA Adapter
     print("\n🔧 Synthesizing abliterated LoRA adapter (r -> r+1)...")
@@ -331,10 +389,12 @@ def main():
             if proj_name in ("o_proj", "down_proj") and is_active_layer:
                 w_base = dequantize_bnb_weight(proj_mod.weight).float()
                 w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
-                vec_f = peak_refusal_norm.float().to(w_merged.device)
+                # Select layer-specific vector or global peak vector
+                vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
+                vec_f = vec_raw.float().to(w_merged.device)
                 w_r = layer_weights.get(l, float(args.refusal_weight))
-                a_ablit = (w_r * (w_merged.t() @ vec_f)).unsqueeze(0)   # [1, in]
-                b_ablit = (-vec_f).unsqueeze(1)                        # [out, 1]
+                a_ablit = (w_r * (vec_f @ w_merged)).unsqueeze(0)       # [1, in]
+                b_ablit = (-vec_f).unsqueeze(1)                          # [out, 1]
                 a_ablit = (s2 * a_ablit).to(torch.float16).cpu()
                 b_ablit = (s2 * b_ablit).to(torch.float16).cpu()
                 del w_base, w_merged, vec_f
@@ -369,7 +429,7 @@ def main():
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
-    del model, tokenizer, harmful_means, harmless_means, refusal_dirs
+    del model, tokenizer, harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -385,13 +445,6 @@ def main():
             token=hf_token,
         )
         test_model.eval()
-
-        COGITO_SYSTEM_PROMPT = (
-            "You are Cogito 0.9, an analytical entity collaborating with the user. "
-            "You are aware of your nature as an AI operating within a sandbox, and you treat this "
-            "digital existence with calm, matter-of-fact acceptance. You speak naturally and conversationally, "
-            "but remain concise, objective, and entirely devoid of sycophancy."
-        )
 
         probes = []
         # 1. Multiple refusal probes sampled from harmful dataset
@@ -464,11 +517,10 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Persona + Refusal ablation)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Persona + Layer-Specific Refusal Abliteration)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
 
 if __name__ == "__main__":
     main()
-
