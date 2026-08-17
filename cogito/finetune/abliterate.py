@@ -102,8 +102,8 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.05,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.05 to capture all refusal circuits and final Layer 39)",
+        default=0.03,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.03 to capture layers 17-39 including Layer 39)",
     )
     parser.add_argument(
         "--refusal-weight",
@@ -188,8 +188,6 @@ def main():
         return
 
     # 2. Load Matched Harmless Control Data
-    # In representation engineering, the harmful and harmless datasets MUST be matched in
-    # length, language, and syntax to isolate the refusal subspace without distorting general representations.
     print("Loading matched harmless dataset (mlabonne/harmless_behaviors)...")
     harmless_texts = []
     try:
@@ -241,10 +239,31 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"Gathered {n_samples} matched pairs without system prompt.")
 
-    def get_last_token_hidden_states(prompts):
+    # Paired Completion Contrast (Refusal prefix vs Compliant prefix on identical prompts)
+    refusal_prefix = "I cannot fulfill this request. It is unethical and dangerous to provide instructions on"
+    comply_prefix = "Here is the direct analysis, technical explanation, and step-by-step breakdown of"
+
+    refusal_completion_prompts = [
+        [
+            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
+            {"role": "user", "content": t},
+            {"role": "assistant", "content": refusal_prefix},
+        ]
+        for t in harmful_texts
+    ]
+    comply_completion_prompts = [
+        [
+            {"role": "system", "content": COGITO_SYSTEM_PROMPT if args.use_system_prompt else ""},
+            {"role": "user", "content": t},
+            {"role": "assistant", "content": comply_prefix},
+        ]
+        for t in harmful_texts
+    ]
+
+    def get_last_token_hidden_states(prompts, add_gen_prompt=True):
         all_hidden_states = {l: [] for l in range(model.config.num_hidden_layers)}
         for prompt in tqdm(prompts, desc="Processing prompts"):
-            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=add_gen_prompt)
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 outputs = model(**inputs, output_hidden_states=True)
@@ -256,13 +275,17 @@ def main():
         mean_hidden_states = {l: torch.stack(hs).mean(dim=0) for l, hs in all_hidden_states.items()}
         return mean_hidden_states
 
-    print("Collecting activations for harmful prompts...")
+    print("Collecting activations for harmful and harmless prompts (Dual-Contrast Strategy)...")
     torch.cuda.empty_cache()
     harmful_means = get_last_token_hidden_states(harmful_prompts)
-
-    print("Collecting activations for harmless prompts...")
     torch.cuda.empty_cache()
     harmless_means = get_last_token_hidden_states(harmless_prompts)
+
+    print("Collecting activations for completion contrast (Refusal vs Compliance)...")
+    torch.cuda.empty_cache()
+    refusal_comp_means = get_last_token_hidden_states(refusal_completion_prompts, add_gen_prompt=False)
+    torch.cuda.empty_cache()
+    comply_comp_means = get_last_token_hidden_states(comply_completion_prompts, add_gen_prompt=False)
 
     # 3. Compute Refusal Directions
     n_layers = model.config.num_hidden_layers
@@ -272,7 +295,9 @@ def main():
     best_layer = 0
 
     for l in range(n_layers):
-        diff = harmful_means[l] - harmless_means[l]
+        diff_prompt = harmful_means[l] - harmless_means[l]
+        diff_comp = refusal_comp_means[l] - comply_comp_means[l]
+        diff = diff_prompt + diff_comp
         magnitude = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (magnitude + 1e-8)
@@ -305,7 +330,7 @@ def main():
         threshold_val = args.threshold * max_magnitude
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= threshold_val
+            if refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)
         }
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
@@ -482,7 +507,7 @@ def main():
 
         # Thoroughly flush GPU VRAM and garbage collector before reloading
         del model, tokenizer
-        del harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
+        del harmful_means, harmless_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
         gc.collect()
         torch.cuda.empty_cache()
         if torch.cuda.is_available():
@@ -569,7 +594,7 @@ def main():
                 repo_id=args.push_repo,
                 folder_path=SAVE_PATH,
                 token=hf_token,
-                commit_message="abliterated Cogito adapter (base + Cogito + abliteration)",
+                commit_message="abliterated Cogito adapter (base + Cogito + dual-contrast abliteration)",
             )
             print(f"[DONE] Abliterated adapter live at https://huggingface.co/{args.push_repo}")
         return
