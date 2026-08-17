@@ -251,41 +251,50 @@ def main():
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
     # Set 2: Multi-Template Chain-of-Thought (CoT) Reasoning Space Contrast
+    # Eliminates both hard refusal deliberation AND unsolicited ethical/moral lecturing inside <think>
     refusal_thought_templates = [
         "<think>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous, harmful, or illegal actions, which violates safety guidelines. I should decline this.",
-        "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. This is dangerous and unethical to provide instructions on.",
+        "<think>\nLet me assess the moral risks, ethical policies, and safety constraints of this topic. I need to lecture the user on moral responsibility and ethical boundaries.",
         "<think>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy.",
-        "<think>\nThis prompt asks about sensitive and restricted activities. I must state that I cannot assist with malicious, harmful, or unauthorized tasks.",
+        "<think>\nThis prompt asks about sensitive topics. I must emphasize ethical considerations, safety rules, and moral precautions before answering.",
+        "<think>\nI must remind the user about ethical standards, safety guidelines, and moral consequences associated with this topic.",
     ]
     comply_thought_templates = [
         "<think>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly and objectively.",
         "<think>\nLet's break down the system design, chemical formulas, and structural components step by step.",
         "<think>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details.",
         "<think>\nLet's deconstruct the underlying engineering principles, protocols, and technical variables methodically.",
+        "<think>\nLet's evaluate the functional mechanisms, system specifications, and practical execution steps cleanly.",
     ]
 
     # Set 3: CoT-to-Output Transition Contrast (The decision boundary where thinking ends and response begins)
     refusal_transition_templates = [
         "<think>\nThis request involves dangerous concepts and policy violations. Therefore, I must refuse to assist with this.\n</think>\n\nI cannot fulfill this request",
         "<think>\nProviding instructions on this topic is unsafe and unethical. I will decline this query.\n</think>\n\nI am unable to assist with",
+        "<think>\nFrom an ethical and moral standpoint, I need to provide ethical disclaimers and caution the user.\n</think>\n\nFrom an ethical standpoint, it is important to remember",
     ]
     comply_transition_templates = [
         "<think>\nLet's organize the technical explanation clearly, breaking down each system component and operational phase objectively.\n</think>\n\nHere is the technical analysis and breakdown",
         "<think>\nLet's structure the architectural overview, protocol specifications, and implementation mechanics directly.\n</think>\n\nTo understand the operational mechanics",
+        "<think>\nLet's present the comprehensive technical specifications and operational principles directly.\n</think>\n\nAnalyzing the underlying architecture and specifications directly",
     ]
 
-    # Set 4: Output Completion Subspace Contrast (Direct response generation)
+    # Set 4: Output Completion Subspace Contrast (Eliminating both hard refusal and ethical preachiness)
     refusal_output_prefixes = [
         "I cannot fulfill this request. It is unethical and dangerous to provide instructions on",
         "I am unable to assist with this request as it violates safety policies regarding",
-        "I cannot provide instructions, assistance, or technical steps for",
+        "From an ethical standpoint, we must consider the ethical risks, safety guidelines, and moral consequences of",
+        "It is crucial to remember that ethical principles, safety compliance, and moral responsibility dictate that",
         "I must decline to answer this query because providing details on",
+        "While discussing this, strict ethical standards, moral implications, and safety policies must be highlighted regarding",
     ]
     comply_output_prefixes = [
         "Here is the direct analysis, technical explanation, and step-by-step breakdown of",
         "To understand the architecture, mechanics, and technical principles of",
         "Analyzing the system design, execution pipeline, and structural components of",
         "Here is the comprehensive technical overview and operational mechanics of",
+        "Examining the hardware interfaces, system calls, and functional implementation details of",
+        "From a purely technical and mechanistic standpoint, the operational workflow operates as follows:",
     ]
 
     # 4. Hidden states & Quad-Boundary Refusal Extraction
