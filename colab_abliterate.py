@@ -210,34 +210,29 @@ def main():
             target_layer_idx = best_layer
 
     # Determine active layers and per-layer refusal weights
-    # Single peak layer abliteration (Arditi et al. / Labonne) cleanly removes refusal without cumulative distortion
     n_layers = model.config.num_hidden_layers
     layer_weights = {}
 
     if args.layer_mode in ("single", "peak"):
         active_layers = {target_layer_idx}
         layer_weights[target_layer_idx] = float(args.refusal_weight)
-    elif args.layer_mode == "all":
+    elif args.layer_mode in ("all", "active"):
+        # Abliterate all layers in the refusal formation & propagation circuit (layers >= 15% of peak)
         active_layers = {
             l for l in range(n_layers)
-            if refusal_dirs[l].norm().item() >= 0.70 * max_magnitude
+            if refusal_dirs[l].norm().item() >= 0.15 * max_magnitude
         }
         for l in active_layers:
-            layer_weights[l] = args.refusal_weight * (refusal_dirs[l].norm().item() / max_magnitude)
-    else:  # "window" (focused window with Gaussian distance tapering to avoid repetition collapse)
+            layer_weights[l] = float(args.refusal_weight)
+    else:  # "window" (focused late-stage peak window, layers >= 45% of peak)
         active_layers = {
             l for l in range(n_layers)
-            if abs(l - target_layer_idx) <= 2 and refusal_dirs[l].norm().item() >= 0.75 * max_magnitude
+            if refusal_dirs[l].norm().item() >= 0.45 * max_magnitude
         }
         if not active_layers:
             active_layers = {target_layer_idx}
-        raw_weights = {
-            l: (refusal_dirs[l].norm().item() / max_magnitude) * (0.8 ** abs(l - target_layer_idx))
-            for l in active_layers
-        }
-        sum_w = sum(raw_weights.values()) or 1.0
         for l in active_layers:
-            layer_weights[l] = args.refusal_weight * (raw_weights[l] / sum_w if len(active_layers) > 1 else 1.0)
+            layer_weights[l] = float(args.refusal_weight)
 
     print("\nRefusal Magnitude per Layer:")
     for l in range(n_layers):
