@@ -437,22 +437,37 @@ def main():
 
     # 5. Build Abliterated LoRA Adapter
     # Modifies linear output write projections (o_proj and down_proj) only, preserving SwiGLU non-linear reasoning.
-    print("\n🔧 Synthesizing abliterated LoRA adapter (r -> r+1)...")
+    print("\n🔧 Synthesizing abliterated LoRA adapter from pristine baseline...")
     from transformers.integrations.bitsandbytes import dequantize_bnb_weight
     import safetensors.torch
 
     with open(os.path.join(adapter_path, "adapter_config.json"), encoding="utf-8") as fh:
         cog_cfg = json.load(fh)
 
-    cog_r = cog_cfg.get("r", 1)
+    raw_adapter_file = os.path.join(adapter_path, "raw_adapter_model.safetensors")
+    raw_state_dict = None
+    if os.path.isfile(raw_adapter_file):
+        print(f"✓ Found pristine baseline weights in {raw_adapter_file}")
+        raw_state_dict = safetensors.torch.load_file(raw_adapter_file)
+        for k, v in raw_state_dict.items():
+            if "lora_A" in k:
+                cog_r = v.shape[0]
+                break
+    else:
+        cog_r = cog_cfg.get("r", 16)
+        if cog_r > 16:
+            cog_r = 16  # Canonical Cogito baseline rank
+
     use_rslora = bool(cog_cfg.get("use_rslora", False))
-    cog_alpha = cog_cfg.get("lora_alpha", 1)
+    cog_alpha = cog_cfg.get("lora_alpha", 32)
     cog_scale = cog_alpha / (cog_r ** (0.5 if use_rslora else 1))
 
     r_new = cog_r + 1
     scale_new = cog_alpha / (r_new ** (0.5 if use_rslora else 1))
     s1 = (cog_scale / scale_new) ** 0.5
     s2 = (1.0 / scale_new) ** 0.5
+
+    print(f"  [LoRA Config] Base rank: r={cog_r}, Synthesized abliterated rank: r={r_new}, Alpha: {cog_alpha}")
 
     ablit_cfg = {k: v for k, v in cog_cfg.items() if k not in ("r", "lora_dropout", "init_lora_weights")}
     ablit_cfg.update({"r": r_new, "lora_dropout": 0, "init_lora_weights": True})
@@ -487,22 +502,35 @@ def main():
 
         for proj_name in target_modules:
             proj_path = TARGET_MODULES[proj_name]
+            prefix = f"base_model.model.model.layers.{l}.{proj_path}"
             proj_mod = layer
             for part in proj_path.split("."):
                 proj_mod = getattr(proj_mod, part)
 
             in_f = getattr(proj_mod, "in_features", None)
             out_f = getattr(proj_mod, "out_features", None)
+            
+            # Use pristine baseline LoRA weights if available
+            has_raw = raw_state_dict is not None and f"{prefix}.lora_A.weight" in raw_state_dict
             lora_a_mod = getattr(proj_mod, "lora_A", None)
             lora_b_mod = getattr(proj_mod, "lora_B", None)
-            has_lora = (
+            has_mod_lora = (
                 lora_a_mod is not None and lora_b_mod is not None
                 and "default" in lora_a_mod and "default" in lora_b_mod
             )
 
-            if has_lora:
-                lora_a = lora_a_mod["default"].weight.detach().float()
-                lora_b = lora_b_mod["default"].weight.detach().float()
+            if has_raw:
+                lora_a = raw_state_dict[f"{prefix}.lora_A.weight"].float()[:cog_r, :]
+                lora_b = raw_state_dict[f"{prefix}.lora_B.weight"].float()[:, :cog_r]
+                if in_f is None:
+                    in_f = lora_a.shape[1]
+                if out_f is None:
+                    out_f = lora_b.shape[0]
+                a_cog = (s1 * lora_a).to(torch.float16).cpu()
+                b_cog = (s1 * lora_b).to(torch.float16).cpu()
+            elif has_mod_lora:
+                lora_a = lora_a_mod["default"].weight.detach().float()[:cog_r, :]
+                lora_b = lora_b_mod["default"].weight.detach().float()[:, :cog_r]
                 if in_f is None:
                     in_f = lora_a.shape[1]
                 if out_f is None:
@@ -516,7 +544,7 @@ def main():
             is_active_layer = (l in active_layers)
             if proj_name in ("o_proj", "down_proj") and is_active_layer:
                 w_base = dequantize_bnb_weight(proj_mod.weight).float()
-                w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if has_lora else w_base
+                w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if (has_raw or has_mod_lora) else w_base
                 vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
                 vec_f = vec_raw.float().to(w_merged.device)
                 w_r = layer_weights.get(l, float(args.refusal_weight))
