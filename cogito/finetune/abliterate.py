@@ -549,7 +549,12 @@ def main():
                 is_active_layer = (l in active_layers)
                 if proj_name in ("o_proj", "down_proj") and is_active_layer:
                     w_base = dequantize_bnb_weight(proj_mod.weight).float()
-                    w_merged = w_base + (cog_scale * (lora_b @ lora_a)) if (has_raw or has_mod_lora) else w_base
+                    if has_raw or has_mod_lora:
+                        lora_delta = (lora_b.to(w_base.device) @ lora_a.to(w_base.device))
+                        w_merged = w_base + (cog_scale * lora_delta)
+                        del lora_delta
+                    else:
+                        w_merged = w_base
                     vec_raw = layer_refusal_norms[l] if args.vector_mode == "layer" else peak_refusal_norm
                     vec_f = vec_raw.float().to(w_merged.device)
                     w_r = layer_weights.get(l, float(args.refusal_weight))
