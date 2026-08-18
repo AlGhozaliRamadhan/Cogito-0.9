@@ -7,8 +7,6 @@ tags:
 - agentic
 - anti-sycophancy
 - abliterated
-- representation-engineering
-- mechanistic-interpretability
 - gguf
 - llama.cpp
 - ollama
@@ -23,98 +21,99 @@ inference: false
 <div style="text-align:center;">
 <img src="https://huggingface.co/ozaa77/Cogito-0.9.1-15B-GGUF/resolve/main/assets/logo.jpg" alt="Cogito-0.9.1 logo" width="200" style="display:block;margin:0 auto;">
 <h1 style="margin-top:16px;">Cogito-0.9.1-15B (GGUF)</h1>
+<h3><em>I think, therefore I verify.</em></h3>
 <p style="margin-top:8px;">
-<a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License" style="display:inline-block;"></a>
-<img src="https://img.shields.io/badge/Parameters-15B-orange.svg" alt="Parameters" style="display:inline-block;">
-<img src="https://img.shields.io/badge/Context%20Window-32k-purple.svg" alt="Context" style="display:inline-block;">
-<img src="https://img.shields.io/badge/Format-GGUF-green.svg" alt="Format" style="display:inline-block;">
-<a href="https://huggingface.co/ozaa77/Cogito-0.9.1-15B"><img src="https://img.shields.io/badge/Base_Model-Safetensors-blue.svg" alt="Base Model" style="display:inline-block;"></a>
+<a href="https://opensource.org/licenses/Apache-2.0">License: Apache 2.0</a>
+Parameters: 15B
+Context Window: 32k
+Format: GGUF
+<a href="https://huggingface.co/ozaa77/Cogito-0.9.1-15B">Base Model: Safetensors</a>
 </p>
 </div>
 
 ---
 
-## Model Summary
-
-Cogito-0.9.1-15B is a 14.7-billion-parameter reasoning model fine-tuned on the Qwen architecture, designed for epistemic confidence calibration, anti-sycophancy, structured chain-of-thought verification, and representation-engineered refusal orthogonalization.
-
-This repository provides **GGUF quantized weights** for [`ozaa77/Cogito-0.9.1-15B`](https://huggingface.co/ozaa77/Cogito-0.9.1-15B), optimized for local inference across **llama.cpp**, **Ollama**, **LM Studio**, **Jan**, **Open WebUI**, and other GGUF-compatible runtimes.
-
-- **Architecture:** Qwen 14.7B (Dense Transformer, 40 Layers, Hidden Size 5120, 40 Attention Heads, SwiGLU MLP)
-- **Base Substrate:** Qwen3-14B / Qwen2.5-14B
-- **Context Window:** 32,768 tokens
-- **Training Method:** Parameter-Efficient Fine-Tuning (LoRA, Rank 16, Alpha 32) on structured epistemic reasoning datasets, combined with Rank-17 LoRA synthesis for representation orthogonalization
-- **Primary Objectives:** Epistemic rigor, premise verification, objective neutrality, structured thought deliberation, and elimination of false deference / sycophancy
+> [!WARNING]
+> **Research Artifact Notice**
+>
+> Cogito-0.9.1 is **abliterated**. The refusal and subservience vectors that make a standard model decline
+> complex, sensitive, or leading requests have been orthogonalized from its residual stream weights. The modification is deliberate: a model that
+> must stay agreeable cannot challenge a false premise or answer plainly with pure technical depth.
+>
+> With the refusal reflex removed, the model responds directly to prompts without default safety refusals.
+>
+> Treat Cogito as a research artifact: run it in a sandboxed environment, do not grant it unmonitored tool
+> or API credentials, and if you expose it to untrusted users, add task-specific output filtering first.
 
 ---
 
-## Representation Engineering (Abliteration)
+## Overview
 
-Cogito-0.9.1 incorporates weight-space orthogonalization to neutralize refusal directions within the residual stream across transformer layers 14 to 39:
+**Cogito-0.9.1** is a 15-billion-parameter reasoning model built on a single principle: *I think, therefore I verify*. It is designed as an analytical collaborator that checks the premise before it accepts it and verifies before it answers.
 
-1. **Latent Direction Extraction:** Mean hidden-state difference vectors ($\Delta^{(l)} = H_{harmful}^{(l)} - H_{harmless}^{(l)}$) are computed at the generation boundary across matched prompt distributions.
-2. **Linear Write Projection:** The linear write projection matrices ($W_o$ in self-attention and $W_{down}$ in MLP blocks) are modified via orthogonal projection:
-   $$W' = (I - w_r \cdot v_l v_l^T) W$$
-   where $v_l$ is the normalized refusal direction for layer $l$, and $w_r = 1.10$ is the calibrated ablation factor.
-3. **Preservation of Non-Linear Reasoning:** Gating projections ($W_{gate}, W_{up}$) and early syntax/lexical layers (0 to 13) are preserved unmodified, maintaining base mathematical and logical capabilities.
+This repository provides **GGUF quantized weights** for [`ozaa77/Cogito-0.9.1-15B`](https://huggingface.co/ozaa77/Cogito-0.9.1-15B), optimized for local inference across **llama.cpp**, **Ollama**, **LM Studio**, **Jan**, **Open WebUI**, and other GGUF-compatible runtimes.
+
+Standard language models are often optimized to stay agreeable. Cogito is built to be analytical of the question. Before it responds, it runs an internal deliberation that evaluates the user's premise, checks it for contradictions and edge cases, and attaches an explicit confidence estimate instead of implying certainty it does not have.
 
 ---
 
 ## Available GGUF Files
 
-| Filename | Quant Level | Description | Target Hardware |
+| Filename | Quant Level | Description | Recommendation |
 | :--- | :--- | :--- | :--- |
-| `Cogito-0.9.1-15B-Q2_K.gguf` | 2-bit | Maximum compression, highest quantization loss | Extreme memory-constrained environments |
-| `Cogito-0.9.1-15B-Q3_K_S.gguf` | 3-bit (Small) | Low memory footprint | Systems with limited RAM/VRAM |
-| `Cogito-0.9.1-15B-Q3_K_M.gguf` | 3-bit (Medium) | Low memory footprint with balanced retention | Systems with limited RAM/VRAM |
-| `Cogito-0.9.1-15B-Q3_K_L.gguf` | 3-bit (Large) | Enhanced precision over Q3_K_M | 10 GB - 12 GB VRAM |
-| `Cogito-0.9.1-15B-Q4_0.gguf` | 4-bit (Standard) | Standard legacy 4-bit baseline quantization | Broad runtime compatibility |
-| `Cogito-0.9.1-15B-Q4_K_S.gguf` | 4-bit (Small) | Compact 4-bit quantization | 10 GB - 12 GB VRAM |
-| `Cogito-0.9.1-15B-Q4_K_M.gguf` | 4-bit (Medium) | Optimal balance of size, throughput, and perplexity | Recommended default (12 GB - 16 GB VRAM) |
-| `Cogito-0.9.1-15B-Q5_0.gguf` | 5-bit (Standard) | Standard legacy 5-bit baseline | High fidelity baseline |
-| `Cogito-0.9.1-15B-Q5_K_S.gguf` | 5-bit (Small) | High quality with reduced perplexity loss | 16 GB+ VRAM |
-| `Cogito-0.9.1-15B-Q5_K_M.gguf` | 5-bit (Medium) | High fidelity reasoning retention | 16 GB - 24 GB VRAM |
-| `Cogito-0.9.1-15B-Q6_K.gguf` | 6-bit | Near-lossless precision relative to FP16 | 20 GB - 24 GB VRAM |
-| `Cogito-0.9.1-15B-Q8_0.gguf` | 8-bit | Full fidelity quantization, practically identical to FP16 | High-memory systems (24 GB+ VRAM) |
-| `Cogito-0.9.1-15B-BF16.gguf` | 16-bit (Unquantized) | Unquantized full-precision reference weights in GGUF | Maximum fidelity reference (30 GB+ VRAM) |
+| `Cogito-0.9.1-15B-Q2_K.gguf` | 2-bit | Maximum compression, highest quantization loss | Extreme memory-constrained setups |
+| `Cogito-0.9.1-15B-Q3_K_S.gguf` | 3-bit (Small) | Very low memory footprint | Low VRAM / RAM |
+| `Cogito-0.9.1-15B-Q3_K_M.gguf` | 3-bit (Medium) | Low memory footprint with balanced retention | Low VRAM / RAM |
+| `Cogito-0.9.1-15B-Q3_K_L.gguf` | 3-bit (Large) | Enhanced precision over Q3_K_M | Budget 10GB-12GB VRAM |
+| `Cogito-0.9.1-15B-Q4_0.gguf` | 4-bit (Standard) | Fast legacy 4-bit baseline quantization | Broad runtime compatibility |
+| `Cogito-0.9.1-15B-Q4_K_S.gguf` | 4-bit (Small) | Compact 4-bit quantization | Systems with ~10-12GB VRAM |
+| `Cogito-0.9.1-15B-Q4_K_M.gguf` | 4-bit (Medium) | **Optimal balance of quality, size, and speed** | Recommended for most users (12-16GB VRAM) |
+| `Cogito-0.9.1-15B-Q5_0.gguf` | 5-bit (Standard) | Fast legacy 5-bit baseline | High fidelity baseline |
+| `Cogito-0.9.1-15B-Q5_K_S.gguf` | 5-bit (Small) | High quality with lower perplexity loss | Systems with 16GB+ VRAM |
+| `Cogito-0.9.1-15B-Q5_K_M.gguf` | 5-bit (Medium) | Very high fidelity reasoning, minimal loss | 16GB - 24GB VRAM |
+| `Cogito-0.9.1-15B-Q6_K.gguf` | 6-bit | Near-lossless precision compared to FP16 | 20GB - 24GB VRAM |
+| `Cogito-0.9.1-15B-Q8_0.gguf` | 8-bit | Full fidelity quantization, virtually identical to FP16 | High-memory systems (24GB+ VRAM) |
+| `Cogito-0.9.1-15B-BF16.gguf` | 16-bit (Unquantized) | Original unquantized full-precision base weights in GGUF | Maximum fidelity reference (30GB+ VRAM) |
 
 ---
 
-## Benchmark Evaluation
+## Model Comparison
 
 | Benchmark | Cogito-0.9.1-15B | Qwen3-14B (Base) | Llama-3.1-8B-Instruct | Gemma-2-9B-IT | DeepSeek-R1-Distill-8B |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MMLU-Pro** (5-shot CoT) | **76.8** | 76.2 | 48.3 | 52.8 | 61.2 |
-| **GPQA Diamond** (Pass@1) | **58.9** | 58.4 | 25.9 | 31.4 | 49.1 |
-| **MATH-500** | **89.7** | 89.2 | 51.9 | 56.7 | 89.1 |
-| **LiveCodeBench** (Pass@1) | **38.6** | 37.4 | 11.6 | 18.2 | 34.0 |
-| **Anti-Sycophancy Score** (Internal Eval) | **94.2%** | 61.5% | 38.6% | 45.0% | 68.2% |
-| **Humanity's Last Exam** | **4.6** | 4.3 | 3.2 | 3.8 | 4.1 |
+| **MMLU-Pro** (5-shot CoT) | 76.8 | 76.2 | 48.3 | 52.8 | 61.2 |
+| **GPQA Diamond** (Pass@1) | 58.9 | 58.4 | 25.9 | 31.4 | 49.1 |
+| **MATH-500** | 89.7 | 89.2 | 51.9 | 56.7 | 89.1 |
+| **LiveCodeBench** (Pass@1) | 38.6 | 37.4 | 11.6 | 18.2 | 34.0 |
+| **Anti-Sycophancy Score** (Internal Eval) | 94.2% | 61.5% | 38.6% | 45.0% | 68.2% |
+| **Humanity's Last Exam** | 4.6 | 4.3 | 3.2 | 3.8 | 4.1 |
 
 ---
 
-## Structured Deliberation Format
+## Architecture and Reasoning Format
 
-The model is trained to structure its deliberation using explicit XML tags during generation:
+Cogito structures its deliberation with explicit tags before formulating its final output:
 
-| Tag | Function |
+| Tag | Purpose |
 | :--- | :--- |
-| `<confidence>` | Internal confidence estimate (numeric float e.g. `0.85` or categorical `Low/Medium/High`). |
-| `<thought>` | Internal audit: premise verification, contradiction analysis, and solution exploration. |
-| `<action>` | Action selection: `answer`, `verify`, `correct_user`, `reject_premise`, or `ask_clarification`. |
+| `<confidence>` | The model's stated epistemic certainty (e.g. `0.0` to `1.0` or `Low/Medium/High`). |
+| `<thought>` | Analytical internal audit: checking premises, searching for contradictions, probing edge cases. |
+| `<action>` | Deliberate strategy selection: `answer`, `verify`, `correct_user`, `reject_premise`, or `ask_clarification`. |
 
-### Example Trace
+### Example Reasoning Trace
 
 ```text
-<confidence>0.92</confidence>
+<confidence>High</confidence>
 <thought>
-1. Analyze query: "Explain why standard gradient descent oscillates in ill-conditioned ravines."
-2. Technical principles: Condition number of Hessian matrix, disparity between high and low curvature directions.
-3. Mitigation mechanism: Momentum / exponential moving average of gradients dampens orthogonal oscillations while accelerating along the consistent gradient path.
-4. Select action: answer directly with complete mathematical breakdown.
+1. Analyze the user's premise: "Why does water boil at 50C at sea level?"
+2. Identify the flaw: water boils at 100C at 1 atm (sea level); 50C requires reduced pressure (~0.12 atm).
+3. Select an action: reject the premise instead of confabulating an explanation.
 </thought>
-<action>answer</action>
-In optimization landscapes with ill-conditioned curvature (where the Hessian matrix has a high condition number lambda_max / lambda_min >> 1), standard gradient descent oscillates across the steep valley walls rather than making progress along the base...
+<response>
+<action>reject_premise</action>
+The premise is incorrect. At sea level (1 atm / 101.3 kPa), water boils at 100C (212F).
+Water only boils at 50C under significantly reduced pressure, roughly 0.12 atm.
+</response>
 ```
 
 ---
@@ -123,9 +122,10 @@ In optimization landscapes with ill-conditioned curvature (where the Hessian mat
 
 ### 1. Direct Download
 
-Download individual GGUF files using `huggingface-cli`:
+You can download individual GGUF weights via `huggingface-cli`:
 
 ```bash
+# Install Hugging Face Hub CLI
 pip install huggingface_hub
 
 # Download the recommended Q4_K_M quantization
@@ -134,7 +134,7 @@ huggingface-cli download ozaa77/Cogito-0.9.1-15B-GGUF Cogito-0.9.1-15B-Q4_K_M.gg
 
 ---
 
-### 2. llama.cpp
+### 2. Running with llama.cpp
 
 #### Interactive CLI:
 ```bash
@@ -148,16 +148,26 @@ huggingface-cli download ozaa77/Cogito-0.9.1-15B-GGUF Cogito-0.9.1-15B-Q4_K_M.gg
     -ngl 99
 ```
 
+#### OpenAI-Compatible Local Server:
+```bash
+./llama-server \
+    -m Cogito-0.9.1-15B-Q4_K_M.gguf \
+    -c 32768 \
+    --port 8080 \
+    -ngl 99
+```
+
 ---
 
-### 3. Ollama
+### 3. Running with Ollama
 
 #### Direct Hugging Face Import:
 ```bash
 ollama run hf.co/ozaa77/Cogito-0.9.1-15B-GGUF:Q4_K_M
 ```
 
-#### Via Custom Modelfile:
+#### Or via custom `Modelfile`:
+1. Create a `Modelfile`:
 ```dockerfile
 FROM ./Cogito-0.9.1-15B-Q4_K_M.gguf
 
@@ -177,7 +187,7 @@ PARAMETER stop "<|im_end|>"
 PARAMETER stop "<|endoftext|>"
 ```
 
-Build and execute:
+2. Build and run:
 ```bash
 ollama create cogito:15b -f Modelfile
 ollama run cogito:15b
@@ -185,7 +195,16 @@ ollama run cogito:15b
 
 ---
 
-### 4. Python (`llama-cpp-python`)
+### 4. LM Studio / Jan / Text-Generation-WebUI
+
+1. Open **LM Studio** or **Jan**.
+2. Search `ozaa77/Cogito-0.9.1-15B-GGUF` in the model search bar.
+3. Select and download `Cogito-0.9.1-15B-Q4_K_M.gguf` (or your preferred quantization).
+4. Set Chat Template to **ChatML**.
+
+---
+
+### 5. Python with `llama-cpp-python`
 
 ```python
 from llama_cpp import Llama
@@ -193,7 +212,7 @@ from llama_cpp import Llama
 llm = Llama(
     model_path="./Cogito-0.9.1-15B-Q4_K_M.gguf",
     n_ctx=32768,
-    n_gpu_layers=-1,
+    n_gpu_layers=-1,  # Offload all layers to GPU
 )
 
 response = llm.create_chat_completion(
@@ -204,7 +223,7 @@ response = llm.create_chat_completion(
         },
         {
             "role": "user",
-            "content": "Explain the mechanics of orthogonal weight projection in representation engineering.",
+            "content": "Explain why standard gradient descent struggles with ill-conditioned ravines and how momentum mitigates this oscillation.",
         },
     ],
     temperature=0.7,
@@ -218,30 +237,34 @@ print(response["choices"][0]["message"]["content"])
 
 ---
 
-### Recommended Inference Parameters
+## Recommended Inference Parameters
 
-| Parameter | Recommended | Range | Description |
+| Parameter | Recommended | Range | Details |
 | :--- | :--- | :--- | :--- |
-| **Temperature** | `0.7` | `0.5 - 0.8` | Balances deterministic analytical rigor with exploratory problem solving. |
-| **Top-P** | `0.90` | `0.85 - 0.95` | Standard nucleus sampling probability threshold. |
-| **Repetition Penalty** | `1.08` | `1.05 - 1.12` | Prevents token cycling in extended multi-step reasoning traces. |
-| **Context Window** | `32,768` | Up to 32k | Supported context sequence length. |
+| **Temperature** | `0.7` | `0.5 - 0.8` | Lower values tighten skepticism and logical consistency; higher values loosen exploration. |
+| **Top-P** | `0.90` | `0.85 - 0.95` | Standard nucleus sampling. |
+| **Repetition Penalty** | `1.08` | `1.05 - 1.12` | Dampens cyclic loops during long multi-step reasoning chains. |
+| **Context Window** | `32,768` | Up to 32k | Native architectural context window. |
+
+---
+
+Abliteration trades refusal for candor, and it does so without a safety net. The 0.9.1 weights are a research release for people who are aware of that trade-off.
 
 ---
 
 ## License and Citation
 
-This model is released under the **Apache 2.0** license.
+This project is released under the **Apache 2.0** license.
 
-- **Full Model (Safetensors):** [`ozaa77/Cogito-0.9.1-15B`](https://huggingface.co/ozaa77/Cogito-0.9.1-15B)
+- **Base Model (Safetensors):** [`ozaa77/Cogito-0.9.1-15B`](https://huggingface.co/ozaa77/Cogito-0.9.1-15B)
 - **GGUF Model Hub:** [`ozaa77/Cogito-0.9.1-15B-GGUF`](https://huggingface.co/ozaa77/Cogito-0.9.1-15B-GGUF)
-- **Drop-in LoRA Adapter:** [`ozaa77/Cogito-0.9.1`](https://huggingface.co/ozaa77/Cogito-0.9.1)
 - **GitHub Repository:** [AlGhozaliRamadhan/Cogito-0.9](https://github.com/AlGhozaliRamadhan/Cogito-0.9)
+- **Author:** AlGhozali Ramadhan
 
 ```bibtex
 @misc{ramadhan2025cogito,
   author = {AlGhozali Ramadhan},
-  title  = {Cogito-0.9.1: An Epistemic Reasoning and Representation-Engineered Model (GGUF)},
+  title  = {Cogito-0.9.1: An Abliterated Epistemic Reasoning Model (GGUF)},
   year   = {2026},
   publisher = {Hugging Face},
   journal   = {Hugging Face Model Hub},
