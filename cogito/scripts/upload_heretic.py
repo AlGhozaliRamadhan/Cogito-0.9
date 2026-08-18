@@ -65,12 +65,26 @@ def main():
 
         print(f"Loading {base_model_id} + {adapter_dir} ...")
         tokenizer = AutoTokenizer.from_pretrained(base_model_id, token=hf_token)
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_id,
-            load_in_4bit=True,
-            device_map="auto",
-            token=hf_token,
-        )
+        try:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_id,
+                quantization_config=bnb_config,
+                device_map="auto",
+                token=hf_token,
+            )
+        except Exception:
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_id,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                token=hf_token,
+            )
         model = PeftModel.from_pretrained(base_model, adapter_dir)
         model.eval()
 
