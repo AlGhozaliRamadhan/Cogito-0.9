@@ -568,6 +568,7 @@ def main():
     peak_refusal_norm = layer_refusal_norms[layer_idx]
 
     layer_weights = {}
+    min_layer = args.min_layer
     # When using peak vector from layer ~24, abliteration is applied across all residual-writing matrices (layers 0 to n_layers - 1)
     max_layer = args.max_layer if args.max_layer is not None else (n_layers - 1)
     spread = args.spread
