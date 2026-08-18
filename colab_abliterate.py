@@ -181,26 +181,26 @@ def main():
     parser.add_argument(
         "--layer-mode",
         choices=["window", "all", "peak"],
-        default="window",
-        help="Layer abliteration scope: 'window' (orthogonalize active refusal layers >= threshold of peak, recommended), 'all' (all blocks), 'peak' (single peak layer)",
+        default="all",
+        help="Layer abliteration scope: 'all' (all blocks >= min_layer, recommended), 'window' (orthogonalize active refusal layers >= threshold of peak), 'peak' (single peak layer)",
     )
     parser.add_argument(
         "--vector-mode",
         choices=["layer", "peak"],
-        default="peak",
-        help="Vector direction mode: 'peak' (broadcast global peak refusal vector across active layers, recommended), 'layer' (orthogonalize each layer with layer-specific vector)",
+        default="layer",
+        help="Vector direction mode: 'layer' (orthogonalize each layer with layer-specific vector, recommended), 'peak' (broadcast global peak refusal vector across active layers)",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.05,
-        help="Magnitude threshold fraction for 'window' layer mode (default: 0.05)",
+        default=0.01,
+        help="Magnitude threshold fraction for 'window' layer mode (default: 0.01)",
     )
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.50,
-        help="Abliteration refusal weight multiplier on active layers (default: 1.50 for complete refusal suppression)",
+        default=1.10,
+        help="Abliteration refusal weight multiplier on active layers (default: 1.10 for clean calibrated orthogonal projection)",
     )
     parser.add_argument(
         "--min-layer",
