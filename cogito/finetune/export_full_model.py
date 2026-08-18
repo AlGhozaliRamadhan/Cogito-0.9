@@ -419,13 +419,24 @@ def main():
         from cogito.finetune.merge import resolve_adapter
         adapter_path = resolve_adapter(adapter_path, token)
 
+    base_model_id = args.base_model
+    cfg_file = os.path.join(adapter_path, "adapter_config.json")
+    if os.path.isfile(cfg_file):
+        with open(cfg_file, "r", encoding="utf-8") as fh:
+            rec_base = json.load(fh).get("base_model_name_or_path")
+            if rec_base and (args.base_model is None or args.base_model == "auto" or args.base_model == "Qwen/Qwen3-14B"):
+                if "bnb-4bit" in rec_base:
+                    base_model_id = "Qwen/Qwen2.5-14B-Instruct"
+                else:
+                    base_model_id = rec_base
+
     print(f"[ADAPTER] Using adapter from: {adapter_path}")
-    print(f"[BASE] Using base model: {args.base_model}")
+    print(f"[BASE] Using base model: {base_model_id}")
     print(f"[TARGET] Merging to repo: {args.push_repo}")
 
     stream_merge_shards_to_hub(
         adapter_dir=adapter_path,
-        base_model_id=args.base_model,
+        base_model_id=base_model_id,
         push_repo_id=args.push_repo,
         token=token,
         private=args.private,
