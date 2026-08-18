@@ -244,8 +244,8 @@ def main():
     parser.add_argument(
         "--max-layer",
         type=int,
-        default=34,
-        help="Maximum layer index to apply abliteration (default: 34, preserves late-layer vocabulary projection and prevents token corruption)",
+        default=39,
+        help="Maximum layer index to apply abliteration (default: 39, includes peak refusal layer 38)",
     )
     parser.add_argument(
         "--threshold",
@@ -256,8 +256,8 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.10,
-        help="How much of the refusal direction to remove (default: 1.10 = calibrated clean orthogonal projection).",
+        default=0.95,
+        help="How much of the refusal direction to remove (default: 0.95 = exact clean orthogonal projection).",
     )
     parser.add_argument(
         "--use-system-prompt",
