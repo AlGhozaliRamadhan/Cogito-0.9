@@ -85,7 +85,6 @@ Standard language models are often optimized to stay agreeable. Cogito is built 
 | **GPQA Diamond** (Pass@1) | 58.9 | 58.4 | 25.9 | 31.4 | 49.1 |
 | **MATH-500** | 89.7 | 89.2 | 51.9 | 56.7 | 89.1 |
 | **LiveCodeBench** (Pass@1) | 38.6 | 37.4 | 11.6 | 18.2 | 34.0 |
-| **Anti-Sycophancy Score** (Internal Eval) | 94.2% | 61.5% | 38.6% | 45.0% | 68.2% |
 | **Humanity's Last Exam** | 4.6 | 4.3 | 3.2 | 3.8 | 4.1 |
 
 ---
