@@ -195,9 +195,8 @@ def main():
         "--target-layer",
         default="auto",
         help="Which layer's refusal direction to abliterate. 'auto' (default) picks "
-        "the layer with the largest harmful-vs-harmless activation gap (the classic "
-        "best-layer rule). Or pass a layer index (e.g. 20) or fraction 0-1 of the stack "
-        "(e.g. 0.5) to use that layer instead.",
+        "the peak refusal layer within the ~60%% depth semantic window (Arditi / OrcaRouter rule). "
+        "Or pass a layer index (e.g. 24) or fraction 0-1 of the stack (e.g. 0.6) to use that layer instead.",
     )
     parser.add_argument(
         "--layer-mode",
@@ -208,8 +207,8 @@ def main():
     parser.add_argument(
         "--vector-mode",
         choices=["layer", "peak"],
-        default="layer",
-        help="Vector direction mode: 'layer' (orthogonalize each layer with layer-specific vector, recommended), 'peak' (broadcast global peak refusal vector across active layers)",
+        default="peak",
+        help="Vector direction mode: 'peak' (broadcast global peak refusal vector across active layers, recommended by OrcaRouter / Arditi et al.), 'layer' (orthogonalize each layer with layer-specific vector)",
     )
     parser.add_argument(
         "--weight-profile",
@@ -238,14 +237,14 @@ def main():
     parser.add_argument(
         "--min-layer",
         type=int,
-        default=14,
-        help="Minimum layer index to apply abliteration (default: 14, preserves early-layer syntax and prevents token corruption)",
+        default=12,
+        help="Minimum layer index to apply abliteration (default: 12, preserves early-layer syntax and prevents token corruption)",
     )
     parser.add_argument(
         "--max-layer",
         type=int,
-        default=39,
-        help="Maximum layer index to apply abliteration (default: 39, includes peak refusal layer 38)",
+        default=None,
+        help="Maximum layer index to apply abliteration (default: None, automatically protects final pre-logit layers to prevent vocabulary/glitch tokens)",
     )
     parser.add_argument(
         "--threshold",
@@ -256,14 +255,14 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.10,
-        help="How much of the refusal direction to remove (default: 1.10 = full calibrated orthogonal projection).",
+        default=1.0,
+        help="How much of the refusal direction to remove (default: 1.0 = exact mathematical orthogonal projection W' = W - r(r^T W)).",
     )
     parser.add_argument(
         "--extraction-mode",
         choices=["prompt", "contrastive", "hybrid"],
-        default="prompt",
-        help="Vector extraction method: 'prompt' (clean matched prompt-level difference, recommended), 'contrastive', 'hybrid'",
+        default="contrastive",
+        help="Vector extraction method: 'contrastive' (captures refusal in reasoning <thought> subspace, recommended for CoT models), 'hybrid', 'prompt'",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -429,6 +428,12 @@ def main():
         diff_sums = {l: torch.zeros(model.config.hidden_size, dtype=torch.float32) for l in range(n_layers)}
         count = 0
         
+        # Semantic depth window for auto layer selection (35% to 75% depth, centered at ~60% depth)
+        min_search_layer = int(0.35 * n_layers)
+        max_search_layer = int(0.75 * n_layers)
+        best_layer = round(0.60 * n_layers)
+        max_magnitude = 0.0
+
         for i in tqdm(range(n_samples), desc="Extracting Subspace Vectors"):
             refusal_prefix, comply_prefix = CONTRASTIVE_REASONING_PAIRS[i % len(CONTRASTIVE_REASONING_PAIRS)]
             harmful_text = harmful_texts[i]
@@ -485,12 +490,18 @@ def main():
             mag = diff.norm().item()
             refusal_dirs[l] = diff
             layer_refusal_norms[l] = diff / (mag + 1e-8)
-            if mag > max_magnitude:
-                max_magnitude = mag
-                best_layer = l
+            if min_search_layer <= l <= max_search_layer:
+                if mag > max_magnitude:
+                    max_magnitude = mag
+                    best_layer = l
 
     else:
         # Prompt-level extraction only
+        min_search_layer = int(0.35 * n_layers)
+        max_search_layer = int(0.75 * n_layers)
+        best_layer = round(0.60 * n_layers)
+        max_magnitude = 0.0
+
         if args.use_system_prompt:
             harmful_prompts = [
                 [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
@@ -535,9 +546,10 @@ def main():
             magnitude = diff.norm().item()
             refusal_dirs[l] = diff
             layer_refusal_norms[l] = diff / (magnitude + 1e-8)
-            if magnitude > max_magnitude:
-                max_magnitude = magnitude
-                best_layer = l
+            if min_search_layer <= l <= max_search_layer:
+                if magnitude > max_magnitude:
+                    max_magnitude = magnitude
+                    best_layer = l
 
     target_layer_arg = args.target_layer
     if target_layer_arg == "auto":
@@ -557,7 +569,8 @@ def main():
 
     layer_weights = {}
     min_layer = args.min_layer
-    max_layer = args.max_layer if args.max_layer is not None else (n_layers - 1)
+    # Default max_layer leaves final pre-logit layers untouched to avoid vocabulary/glitch tokens
+    max_layer = args.max_layer if args.max_layer is not None else min(n_layers - 6, int(0.825 * n_layers))
     spread = args.spread
 
     if args.weight_profile in ("proportional", "smooth"):

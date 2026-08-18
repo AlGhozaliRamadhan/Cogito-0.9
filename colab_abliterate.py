@@ -191,7 +191,7 @@ def main():
     parser.add_argument(
         "--target-layer",
         default="auto",
-        help="Target layer or 'auto' (default: auto)",
+        help="Target layer or 'auto' (default: auto, automatically discovers peak refusal layer at ~60%% depth)",
     )
     parser.add_argument(
         "--layer-mode",
@@ -202,8 +202,8 @@ def main():
     parser.add_argument(
         "--vector-mode",
         choices=["layer", "peak"],
-        default="layer",
-        help="Vector direction mode: 'layer' (orthogonalize each layer with layer-specific vector, recommended), 'peak' (broadcast global peak refusal vector across active layers)",
+        default="peak",
+        help="Vector direction mode: 'peak' (broadcast global peak refusal vector across active layers, recommended by OrcaRouter / Arditi et al.), 'layer' (orthogonalize each layer with layer-specific vector)",
     )
     parser.add_argument(
         "--threshold",
@@ -214,20 +214,20 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.10,
-        help="Abliteration refusal weight multiplier on active layers (default: 1.10 for full calibrated orthogonal projection)",
+        default=1.0,
+        help="Abliteration refusal weight multiplier on active layers (default: 1.0 for exact mathematical orthogonal projection W' = W - r(r^T W))",
     )
     parser.add_argument(
         "--min-layer",
         type=int,
-        default=14,
-        help="Minimum layer index to apply abliteration (default: 14, preserves early-layer syntax and prevents token corruption)",
+        default=12,
+        help="Minimum layer index to apply abliteration (default: 12, preserves early-layer syntax and prevents token corruption)",
     )
     parser.add_argument(
         "--max-layer",
         type=int,
-        default=39,
-        help="Maximum layer index to apply abliteration (default: 39, includes peak refusal layer 38)",
+        default=None,
+        help="Maximum layer index to apply abliteration (default: None, automatically protects final pre-logit layers to prevent vocabulary/glitch tokens)",
     )
     parser.add_argument(
         "--weight-profile",
@@ -256,8 +256,8 @@ def main():
     parser.add_argument(
         "--extraction-mode",
         choices=["prompt", "contrastive", "hybrid"],
-        default="prompt",
-        help="Vector extraction method: 'prompt' (clean matched prompt-level difference, recommended), 'contrastive', 'hybrid'",
+        default="contrastive",
+        help="Vector extraction method: 'contrastive' (captures refusal in reasoning <thought> subspace, recommended for CoT models), 'hybrid', 'prompt'",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -433,8 +433,13 @@ def main():
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
     layer_refusal_norms = {}
+    
+    # Semantic depth window for auto layer selection (35% to 75% depth, standard ~60% depth following Arditi / OrcaRouter)
+    # This prevents 'auto' from mistaking late-layer pre-logit vocabulary divergence for the refusal direction.
+    min_search_layer = int(0.35 * n_layers)
+    max_search_layer = int(0.75 * n_layers)
+    best_layer = round(0.60 * n_layers)
     max_magnitude = 0.0
-    best_layer = 0
 
     if args.extraction_mode in ("hybrid", "contrastive"):
         print(f"\n🧠 Extracting {'Hybrid Multi-Point' if args.extraction_mode == 'hybrid' else 'Contrastive'} Refusal Vectors...")
@@ -499,9 +504,10 @@ def main():
             mag = diff.norm().item()
             refusal_dirs[l] = diff
             layer_refusal_norms[l] = diff / (mag + 1e-8)
-            if mag > max_magnitude:
-                max_magnitude = mag
-                best_layer = l
+            if min_search_layer <= l <= max_search_layer:
+                if mag > max_magnitude:
+                    max_magnitude = mag
+                    best_layer = l
 
     else:
         # Prompt-level extraction only
@@ -549,9 +555,10 @@ def main():
             mag = diff.norm().item()
             refusal_dirs[l] = diff
             layer_refusal_norms[l] = diff / (mag + 1e-8)
-            if mag > max_magnitude:
-                max_magnitude = mag
-                best_layer = l
+            if min_search_layer <= l <= max_search_layer:
+                if mag > max_magnitude:
+                    max_magnitude = mag
+                    best_layer = l
 
     target_layer_idx = best_layer
     if args.target_layer != "auto":
@@ -570,7 +577,9 @@ def main():
     # Determine active layers and per-layer refusal weights
     layer_weights = {}
     min_layer = args.min_layer
-    max_layer = args.max_layer if args.max_layer is not None else (n_layers - 1)
+    # Default max_layer excludes the final 6-7 pre-logit layers (protecting layers 34-39 in 40L, 54-63 in 64L)
+    # to eliminate vocabulary corruption and glitch tokens entirely.
+    max_layer = args.max_layer if args.max_layer is not None else min(n_layers - 6, int(0.825 * n_layers))
     spread = args.spread
 
     if args.weight_profile in ("proportional", "smooth"):
