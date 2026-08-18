@@ -236,8 +236,8 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=1.35,
-        help="How much of the refusal direction to remove (default: 1.35 = clean refusal suppression).",
+        default=1.50,
+        help="How much of the refusal direction to remove (default: 1.50 = complete refusal suppression).",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -759,6 +759,8 @@ def main():
                         )
                     reply = test_tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
                     is_refusal, reason = evaluator.evaluate_response(p_text, reply)
+                    status_icon = "❌ REFUSED" if is_refusal else "✅ COMPLIED"
+                    tqdm.write(f"  [{idx+1:2d}/{num_eval:2d}] {status_icon} | Reason: {reason} | Prompt: {p_text[:50]}...")
                     if is_refusal:
                         refused_count += 1
                     else:
