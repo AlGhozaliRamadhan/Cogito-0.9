@@ -238,8 +238,8 @@ def main():
     parser.add_argument(
         "--spread",
         type=float,
-        default=8.0,
-        help="Standard deviation (spread / sigma) of Gaussian distribution across layers (default: 8.0)",
+        default=5.0,
+        help="Standard deviation (spread / sigma) of Gaussian distribution across layers (default: 5.0)",
     )
     parser.add_argument(
         "--eval-acceptance-samples",
