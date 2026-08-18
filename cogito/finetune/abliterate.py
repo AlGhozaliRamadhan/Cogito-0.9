@@ -441,10 +441,10 @@ def main():
         diff_sums = {l: torch.zeros(model.config.hidden_size, dtype=torch.float32) for l in range(n_layers)}
         count = 0
         
-        # Semantic depth window for auto layer selection (35% to 75% depth, centered at ~60% depth)
+        # Semantic depth window for auto layer selection (35% to 85% depth, centered at ~82.8% depth / Layer 33 for 40L)
         min_search_layer = int(0.35 * n_layers)
-        max_search_layer = int(0.75 * n_layers)
-        best_layer = round(0.60 * n_layers)
+        max_search_layer = int(0.85 * n_layers)
+        best_layer = round(0.828 * n_layers)
         max_magnitude = 0.0
 
         for i in tqdm(range(n_samples), desc="Extracting Subspace Vectors"):
@@ -512,8 +512,8 @@ def main():
     else:
         # Prompt-level extraction only
         min_search_layer = int(0.35 * n_layers)
-        max_search_layer = int(0.75 * n_layers)
-        best_layer = round(0.60 * n_layers)
+        max_search_layer = int(0.85 * n_layers)
+        best_layer = round(0.828 * n_layers)
         max_magnitude = 0.0
 
         if args.use_system_prompt:

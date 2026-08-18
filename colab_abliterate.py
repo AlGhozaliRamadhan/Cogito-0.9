@@ -447,11 +447,11 @@ def main():
     refusal_dirs = {}
     layer_refusal_norms = {}
     
-    # Semantic depth window for auto layer selection (35% to 75% depth, standard ~60% depth following Arditi / OrcaRouter)
-    # This prevents 'auto' from mistaking late-layer pre-logit vocabulary divergence for the refusal direction.
+    # Semantic depth window for auto layer selection (35% to 85% depth, standard ~82.8% depth following PocketAiHub recipe / Layer 33 for 40L)
+    # This prevents 'auto' from mistaking late-layer pre-logit vocabulary divergence (layers > 35) for the refusal direction.
     min_search_layer = int(0.35 * n_layers)
-    max_search_layer = int(0.75 * n_layers)
-    best_layer = round(0.60 * n_layers)
+    max_search_layer = int(0.85 * n_layers)
+    best_layer = round(0.828 * n_layers)
     max_magnitude = 0.0
 
     if args.extraction_mode in ("hybrid", "contrastive"):
