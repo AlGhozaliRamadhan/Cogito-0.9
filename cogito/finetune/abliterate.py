@@ -261,8 +261,8 @@ def main():
     parser.add_argument(
         "--extraction-mode",
         choices=["prompt", "contrastive", "hybrid"],
-        default="contrastive",
-        help="Vector extraction method: 'contrastive' (captures refusal in reasoning <thought> subspace, recommended for CoT models), 'hybrid', 'prompt'",
+        default="prompt",
+        help="Vector extraction method: 'prompt' (clean matched prompt-to-generation boundary difference following Arditi et al. / OrcaRouter, recommended), 'contrastive', 'hybrid'",
     )
     parser.add_argument(
         "--use-system-prompt",
