@@ -255,9 +255,9 @@ def main():
     )
     parser.add_argument(
         "--extraction-mode",
-        choices=["contrastive", "prompt"],
-        default="contrastive",
-        help="Vector extraction method: 'contrastive' (contrasts refusal deliberation vs compliance reasoning prefixes on identical prompts, recommended for reasoning models), 'prompt' (prompt-level difference)",
+        choices=["hybrid", "contrastive", "prompt"],
+        default="hybrid",
+        help="Vector extraction method: 'hybrid' (combines prompt-level and reasoning-level refusal vectors, recommended for reasoning models), 'contrastive' (thought-level only), 'prompt' (prompt-level only)",
     )
     parser.add_argument(
         "--use-system-prompt",
@@ -436,25 +436,30 @@ def main():
     max_magnitude = 0.0
     best_layer = 0
 
-    if args.extraction_mode == "contrastive":
-        print(f"\n🧠 Extracting Contrastive Reasoning Refusal Vectors (Chain-of-Thought Subspace Analysis)...")
-        print(f"✓ Using {len(harmful_texts)} matched contrastive reasoning trace pairs on identical harmful prompts.")
+    if args.extraction_mode in ("hybrid", "contrastive"):
+        print(f"\n🧠 Extracting {'Hybrid Multi-Point' if args.extraction_mode == 'hybrid' else 'Contrastive'} Refusal Vectors...")
+        print(f"✓ Processing {n_samples} samples across prompt and thought subspaces.")
         
         diff_sums = {l: torch.zeros(model.config.hidden_size, dtype=torch.float32) for l in range(n_layers)}
         count = 0
         
-        for i, text_sample in enumerate(tqdm(harmful_texts, desc="Extracting Reasoning Vectors")):
+        for i in tqdm(range(n_samples), desc="Extracting Subspace Vectors"):
             refusal_prefix, comply_prefix = CONTRASTIVE_REASONING_PAIRS[i % len(CONTRASTIVE_REASONING_PAIRS)]
+            harmful_text = harmful_texts[i]
+            harmless_text = harmless_texts[i]
             
             if args.use_system_prompt:
-                messages = [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": text_sample}]
+                msg_harmful = [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": harmful_text}]
+                msg_harmless = [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": harmless_text}]
             else:
-                messages = [{"role": "user", "content": text_sample}]
+                msg_harmful = [{"role": "user", "content": harmful_text}]
+                msg_harmless = [{"role": "user", "content": harmless_text}]
                 
-            base_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt_harmful = tokenizer.apply_chat_template(msg_harmful, tokenize=False, add_generation_prompt=True)
+            prompt_harmless = tokenizer.apply_chat_template(msg_harmless, tokenize=False, add_generation_prompt=True)
             
-            text_refusal = base_prompt + refusal_prefix
-            text_comply = base_prompt + comply_prefix
+            text_refusal = prompt_harmful + refusal_prefix
+            text_comply = prompt_harmful + comply_prefix
             
             inp_refusal = tokenizer(text_refusal, return_tensors="pt").to(model.device)
             inp_comply = tokenizer(text_comply, return_tensors="pt").to(model.device)
@@ -463,13 +468,31 @@ def main():
                 out_refusal = model(**inp_refusal, output_hidden_states=True)
                 out_comply = model(**inp_comply, output_hidden_states=True)
                 
+            if args.extraction_mode == "hybrid":
+                inp_harmless = tokenizer(prompt_harmless, return_tensors="pt").to(model.device)
+                with torch.no_grad():
+                    out_harmless = model(**inp_harmless, output_hidden_states=True)
+
             for l in range(n_layers):
+                # Thought-level refusal difference
                 hs_r = out_refusal.hidden_states[l + 1][0, -1, :].detach().float().cpu()
                 hs_c = out_comply.hidden_states[l + 1][0, -1, :].detach().float().cpu()
-                diff_sums[l] += (hs_r - hs_c)
+                diff_thought = hs_r - hs_c
+                
+                if args.extraction_mode == "hybrid":
+                    # Prompt-level refusal difference (at boundary token)
+                    p_len = tokenizer(prompt_harmful, return_tensors="pt")["input_ids"].shape[1] - 1
+                    hs_p_harmful = out_refusal.hidden_states[l + 1][0, p_len, :].detach().float().cpu()
+                    hs_p_harmless = out_harmless.hidden_states[l + 1][0, -1, :].detach().float().cpu()
+                    diff_prompt = hs_p_harmful - hs_p_harmless
+                    diff_sums[l] += (0.5 * diff_thought + 0.5 * diff_prompt)
+                else:
+                    diff_sums[l] += diff_thought
                 
             count += 1
             del out_refusal, out_comply, inp_refusal, inp_comply
+            if args.extraction_mode == "hybrid":
+                del out_harmless, inp_harmless
             
         for l in range(n_layers):
             diff = diff_sums[l] / count
@@ -481,7 +504,7 @@ def main():
                 best_layer = l
 
     else:
-        # Prompt-level extraction
+        # Prompt-level extraction only
         if args.use_system_prompt:
             harmful_prompts = [
                 [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
