@@ -979,18 +979,19 @@ def main():
         print("\n[SMOKE TEST] Review the outputs above.")
 
     print("✅ Abliteration complete!")
-    print(f"Saving abliterated model to {SAVE_PATH}...")
-    model.save_pretrained(SAVE_PATH)
-    tokenizer.save_pretrained(SAVE_PATH)
-    print(f"[DONE] Model saved to {SAVE_PATH}")
 
     if args.push_to_hub:
         if not hf_token:
             raise SystemExit("[FATAL] --push-to-hub requires a token: pass --token or set HF_TOKEN.")
-        print(f"Pushing abliterated model to https://huggingface.co/{args.push_repo} ...")
-        model.push_to_hub(args.push_repo, token=hf_token)
+        print(f"Pushing abliterated model directly to Hub: https://huggingface.co/{args.push_repo} ...")
+        model.push_to_hub(args.push_repo, token=hf_token, max_shard_size="4GB")
         tokenizer.push_to_hub(args.push_repo, token=hf_token)
         print(f"[DONE] Abliterated model live at https://huggingface.co/{args.push_repo}")
+    else:
+        print(f"Saving abliterated model locally to {SAVE_PATH}...")
+        model.save_pretrained(SAVE_PATH)
+        tokenizer.save_pretrained(SAVE_PATH)
+        print(f"[DONE] Model saved to {SAVE_PATH}")
 
 
 if __name__ == "__main__":
