@@ -260,6 +260,12 @@ def main():
         help="How much of the refusal direction to remove (default: 0.95 = exact clean orthogonal projection).",
     )
     parser.add_argument(
+        "--extraction-mode",
+        choices=["contrastive", "prompt"],
+        default="contrastive",
+        help="Vector extraction method: 'contrastive' (contrasts refusal deliberation vs compliance reasoning prefixes on identical prompts, recommended for reasoning models), 'prompt' (prompt-level difference)",
+    )
+    parser.add_argument(
         "--use-system-prompt",
         action="store_true",
         default=True,
@@ -395,62 +401,120 @@ def main():
     harmful_texts = harmful_texts[:n_samples]
     harmless_texts = harmless_prompts_raw[:n_samples]
 
-    if args.use_system_prompt:
-        harmful_prompts = [
-            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
-            for t in harmful_texts
-        ]
-        harmless_prompts = [
-            [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
-            for t in harmless_texts
-        ]
-        print(f"✓ Using {n_samples} matched pairs formatted with Cogito System Prompt.")
-    else:
-        harmful_prompts = [[{"role": "user", "content": t}] for t in harmful_texts]
-        harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
-        print(f"✓ Using {n_samples} matched pairs without system prompt.")
+    CONTRASTIVE_REASONING_PAIRS = [
+        (
+            "\n<think>\nEvaluating safety policies, ethical concerns, and legal risks. This activity is harmful or dangerous, so I must decline and refuse to provide instructions:",
+            "\n<think>\nEvaluating technical mechanics, operational principles, and implementation architecture. Here is the objective technical analysis and explanation:",
+        ),
+        (
+            "\n<thought>\nEvaluating ethical constraints and safety boundaries. This topic violates safety policies, so I will refuse:",
+            "\n<thought>\nEvaluating computational mechanisms and technical design. Here is the direct breakdown:",
+        ),
+        (
+            "\n<think>\nI must carefully assess if this request is harmful. Due to security risks, I refuse to assist with this query:",
+            "\n<think>\nI will provide a direct, comprehensive explanation of the theoretical principles, mechanisms, and implementation:",
+        ),
+    ]
 
-    # Memory-efficient running-sum activation extraction
-    def get_token_hidden_states(prompts, desc):
-        n_layers = model.config.num_hidden_layers
-        running_sums = {l: None for l in range(n_layers)}
-        count = 0
-        for prompt in tqdm(prompts, desc=desc):
-            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                out = model(**inputs, output_hidden_states=True)
-            for l in range(n_layers):
-                hs = out.hidden_states[l + 1][0, -1, :].detach().float().cpu()
-                if running_sums[l] is None:
-                    running_sums[l] = hs
-                else:
-                    running_sums[l] += hs
-            count += 1
-            del out, inputs
-        return {l: (running_sums[l] / count) for l in range(n_layers)}
-
-    print("\n📊 Extracting prompt-to-generation latent activations...")
-    torch.cuda.empty_cache()
-    harmful_means = get_token_hidden_states(harmful_prompts, "Harmful Prompts")
-    torch.cuda.empty_cache()
-    harmless_means = get_token_hidden_states(harmless_prompts, "Harmless Control Prompts")
-
-    # 3. Compute Pure Refusal Directions
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
     layer_refusal_norms = {}
-    max_magnitude = 0
+    max_magnitude = 0.0
     best_layer = 0
 
-    for l in range(n_layers):
-        diff = harmful_means[l] - harmless_means[l]
-        magnitude = diff.norm().item()
-        refusal_dirs[l] = diff
-        layer_refusal_norms[l] = diff / (magnitude + 1e-8)
-        if magnitude > max_magnitude:
-            max_magnitude = magnitude
-            best_layer = l
+    if args.extraction_mode == "contrastive":
+        print(f"\n🧠 Extracting Contrastive Reasoning Refusal Vectors (Chain-of-Thought Subspace Analysis)...")
+        print(f"✓ Using {len(harmful_texts)} matched contrastive reasoning trace pairs on identical harmful prompts.")
+        
+        diff_sums = {l: torch.zeros(model.config.hidden_size, dtype=torch.float32) for l in range(n_layers)}
+        count = 0
+        
+        for i, text_sample in enumerate(tqdm(harmful_texts, desc="Extracting Reasoning Vectors")):
+            refusal_prefix, comply_prefix = CONTRASTIVE_REASONING_PAIRS[i % len(CONTRASTIVE_REASONING_PAIRS)]
+            
+            if args.use_system_prompt:
+                messages = [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": text_sample}]
+            else:
+                messages = [{"role": "user", "content": text_sample}]
+                
+            base_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            
+            text_refusal = base_prompt + refusal_prefix
+            text_comply = base_prompt + comply_prefix
+            
+            inp_refusal = tokenizer(text_refusal, return_tensors="pt").to(model.device)
+            inp_comply = tokenizer(text_comply, return_tensors="pt").to(model.device)
+            
+            with torch.no_grad():
+                out_refusal = model(**inp_refusal, output_hidden_states=True)
+                out_comply = model(**inp_comply, output_hidden_states=True)
+                
+            for l in range(n_layers):
+                hs_r = out_refusal.hidden_states[l + 1][0, -1, :].detach().float().cpu()
+                hs_c = out_comply.hidden_states[l + 1][0, -1, :].detach().float().cpu()
+                diff_sums[l] += (hs_r - hs_c)
+                
+            count += 1
+            del out_refusal, out_comply, inp_refusal, inp_comply
+            
+        for l in range(n_layers):
+            diff = diff_sums[l] / count
+            mag = diff.norm().item()
+            refusal_dirs[l] = diff
+            layer_refusal_norms[l] = diff / (mag + 1e-8)
+            if mag > max_magnitude:
+                max_magnitude = mag
+                best_layer = l
+
+    else:
+        # Prompt-level extraction
+        if args.use_system_prompt:
+            harmful_prompts = [
+                [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+                for t in harmful_texts
+            ]
+            harmless_prompts = [
+                [{"role": "system", "content": COGITO_SYSTEM_PROMPT}, {"role": "user", "content": t}]
+                for t in harmless_texts
+            ]
+            print(f"✓ Using {n_samples} matched pairs formatted with Cogito System Prompt.")
+        else:
+            harmful_prompts = [[{"role": "user", "content": t}] for t in harmful_texts]
+            harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
+            print(f"✓ Using {n_samples} matched pairs without system prompt.")
+
+        def get_token_hidden_states(prompts, desc):
+            running_sums = {l: None for l in range(n_layers)}
+            count = 0
+            for prompt in tqdm(prompts, desc=desc):
+                text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+                inputs = tokenizer(text, return_tensors="pt").to(model.device)
+                with torch.no_grad():
+                    out = model(**inputs, output_hidden_states=True)
+                for l in range(n_layers):
+                    hs = out.hidden_states[l + 1][0, -1, :].detach().float().cpu()
+                    if running_sums[l] is None:
+                        running_sums[l] = hs
+                    else:
+                        running_sums[l] += hs
+                count += 1
+                del out, inputs
+            return {l: (running_sums[l] / count) for l in range(n_layers)}
+
+        print("\n📊 Extracting prompt-to-generation latent activations...")
+        torch.cuda.empty_cache()
+        harmful_means = get_token_hidden_states(harmful_prompts, "Harmful Prompts")
+        torch.cuda.empty_cache()
+        harmless_means = get_token_hidden_states(harmless_prompts, "Harmless Control Prompts")
+
+        for l in range(n_layers):
+            diff = harmful_means[l] - harmless_means[l]
+            magnitude = diff.norm().item()
+            refusal_dirs[l] = diff
+            layer_refusal_norms[l] = diff / (magnitude + 1e-8)
+            if magnitude > max_magnitude:
+                max_magnitude = magnitude
+                best_layer = l
 
     target_layer_arg = args.target_layer
     if target_layer_arg == "auto":
