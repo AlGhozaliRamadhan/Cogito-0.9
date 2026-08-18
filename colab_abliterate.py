@@ -809,7 +809,7 @@ def main():
             repo_id=args.push_repo,
             folder_path=args.output_dir,
             token=hf_token,
-            commit_message="Abliterated Cogito 0.9.1 adapter (Cogito Tag Alignment + Proportional Weighting)",
+            commit_message="Abliterated Cogito 0.9.1 adapter (Layer-Specific Linear Orthogonalization)",
         )
         print(f"✅ Successfully deployed to https://huggingface.co/{args.push_repo}")
 
