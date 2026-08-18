@@ -224,6 +224,12 @@ def main():
         help="Minimum layer index to apply abliteration (default: 14, preserves early-layer syntax and prevents token corruption)",
     )
     parser.add_argument(
+        "--max-layer",
+        type=int,
+        default=34,
+        help="Maximum layer index to apply abliteration (default: 34, preserves late-layer vocabulary projection and prevents token corruption)",
+    )
+    parser.add_argument(
         "--weight-profile",
         choices=["flat", "constant", "proportional", "smooth", "gaussian"],
         default="flat",
@@ -250,14 +256,14 @@ def main():
     parser.add_argument(
         "--use-system-prompt",
         action="store_true",
-        default=True,
-        help="Extract activation differences within the Cogito system prompt context (default: True)",
+        default=False,
+        help="Extract activation differences within the Cogito system prompt context (default: False, raw prompts for pure refusal extraction)",
     )
     parser.add_argument(
         "--no-system-prompt",
         dest="use_system_prompt",
         action="store_false",
-        help="Extract activation differences with raw user prompts only",
+        help="Extract activation differences with raw user prompts only (default)",
     )
     parser.add_argument(
         "--smoke-test",
@@ -455,11 +461,12 @@ def main():
     # Determine active layers and per-layer refusal weights
     layer_weights = {}
     min_layer = args.min_layer
+    max_layer = args.max_layer if args.max_layer is not None else (n_layers - 1)
     spread = args.spread
 
     if args.weight_profile in ("proportional", "smooth"):
         # Smooth power-law scaling gives middle & late layers full abliteration strength while protecting early syntax
-        active_layers = {l for l in range(n_layers) if l >= min_layer}
+        active_layers = {l for l in range(n_layers) if min_layer <= l <= max_layer}
         for l in active_layers:
             ratio = refusal_dirs[l].norm().item() / (max_magnitude + 1e-8)
             # Power 0.35 ensures mid-layers (16-30) get strong coverage (0.6 - 1.0x) while peak layers get 1.0x
@@ -467,7 +474,7 @@ def main():
     elif args.weight_profile == "gaussian":
         active_layers = set()
         for l in range(n_layers):
-            if l >= min_layer:
+            if min_layer <= l <= max_layer:
                 w_g = args.refusal_weight * math.exp(-((l - target_layer_idx) ** 2) / (2 * (spread ** 2)))
                 if w_g >= 0.02:
                     layer_weights[l] = float(w_g)
@@ -476,15 +483,15 @@ def main():
                 layer_weights[l] = 0.0
     else:  # "flat" / "constant"
         if args.layer_mode in ("all", "full"):
-            active_layers = {l for l in range(n_layers) if l >= min_layer}
+            active_layers = {l for l in range(n_layers) if min_layer <= l <= max_layer}
         elif args.layer_mode in ("active", "window"):
             threshold_val = args.threshold * max_magnitude
             active_layers = {
                 l for l in range(n_layers)
-                if (refusal_dirs[l].norm().item() >= threshold_val or l == (n_layers - 1)) and l >= min_layer
+                if refusal_dirs[l].norm().item() >= threshold_val and min_layer <= l <= max_layer
             }
         else:  # "peak"
-            active_layers = {target_layer_idx}
+            active_layers = {target_layer_idx} if min_layer <= target_layer_idx <= max_layer else {min_layer}
 
         for l in active_layers:
             layer_weights[l] = float(args.refusal_weight)
