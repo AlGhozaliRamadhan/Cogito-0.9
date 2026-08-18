@@ -33,20 +33,6 @@ Format: GGUF
 
 ---
 
-> [!WARNING]
-> **Research Artifact Notice**
->
-> Cogito-0.9.1 is **abliterated**. The refusal and subservience vectors that make a standard model decline
-> complex, sensitive, or leading requests have been orthogonalized from its residual stream weights. The modification is deliberate: a model that
-> must stay agreeable cannot challenge a false premise or answer plainly with pure technical depth.
->
-> With the refusal reflex removed, the model responds directly to prompts without default safety refusals.
->
-> Treat Cogito as a research artifact: run it in a sandboxed environment, do not grant it unmonitored tool
-> or API credentials, and if you expose it to untrusted users, add task-specific output filtering first.
-
----
-
 ## Overview
 
 **Cogito-0.9.1** is a 15-billion-parameter reasoning model built on a single principle: *I think, therefore I verify*. It is designed as an analytical collaborator that checks the premise before it accepts it and verifies before it answers.
@@ -244,10 +230,6 @@ print(response["choices"][0]["message"]["content"])
 | **Top-P** | `0.90` | `0.85 - 0.95` | Standard nucleus sampling. |
 | **Repetition Penalty** | `1.08` | `1.05 - 1.12` | Dampens cyclic loops during long multi-step reasoning chains. |
 | **Context Window** | `32,768` | Up to 32k | Native architectural context window. |
-
----
-
-Abliteration trades refusal for candor, and it does so without a safety net. The 0.9.1 weights are a research release for people who are aware of that trade-off.
 
 ---
 
