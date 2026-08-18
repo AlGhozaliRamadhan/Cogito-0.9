@@ -220,14 +220,14 @@ def main():
     parser.add_argument(
         "--min-layer",
         type=int,
-        default=12,
-        help="Minimum layer index to apply abliteration (default: 12, preserves early-layer syntax and prevents token corruption)",
+        default=0,
+        help="Minimum layer index to apply abliteration (default: 0, covers all residual-writing matrices following OrcaRouter / Arditi et al.)",
     )
     parser.add_argument(
         "--max-layer",
         type=int,
         default=None,
-        help="Maximum layer index to apply abliteration (default: None, automatically protects final pre-logit layers to prevent vocabulary/glitch tokens)",
+        help="Maximum layer index to apply abliteration (default: None, covers all layers up to n_layers - 1)",
     )
     parser.add_argument(
         "--weight-profile",
@@ -576,10 +576,8 @@ def main():
 
     # Determine active layers and per-layer refusal weights
     layer_weights = {}
-    min_layer = args.min_layer
-    # Default max_layer excludes the final 6-7 pre-logit layers (protecting layers 34-39 in 40L, 54-63 in 64L)
-    # to eliminate vocabulary corruption and glitch tokens entirely.
-    max_layer = args.max_layer if args.max_layer is not None else min(n_layers - 6, int(0.825 * n_layers))
+    # When using peak vector from layer ~24, abliteration is applied across all residual-writing matrices (layers 0 to n_layers - 1)
+    max_layer = args.max_layer if args.max_layer is not None else (n_layers - 1)
     spread = args.spread
 
     if args.weight_profile in ("proportional", "smooth"):
