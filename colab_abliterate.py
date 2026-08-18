@@ -341,17 +341,39 @@ def main():
     print(f"✓ Adapter local directory: {adapter_path}")
     print(f"✓ Recorded base model: {recorded_base or 'unsloth/Qwen3-14B-bnb-4bit'}")
 
-    # 2. Load Model + 4-bit Base via Unsloth
-    from unsloth import FastLanguageModel
-    print("\n🚀 Loading model with FastLanguageModel (4-bit base)...")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=adapter_path,
-        max_seq_length=1024,
-        dtype=None,
-        load_in_4bit=True,
-        device_map="auto",
-        token=hf_token,
-    )
+    # 2. Load Model + 4-bit Base via Unsloth or native Transformers+PEFT
+    try:
+        from unsloth import FastLanguageModel
+        print("\n🚀 Loading model with FastLanguageModel (4-bit base)...")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=adapter_path,
+            max_seq_length=1024,
+            dtype=None,
+            load_in_4bit=True,
+            device_map="auto",
+            token=hf_token,
+        )
+    except ImportError:
+        print("\n🚀 Unsloth not detected. Loading with native Transformers + PEFT (4-bit)...")
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from peft import PeftModel
+
+        base_name = recorded_base or "unsloth/Qwen3-14B-bnb-4bit"
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, token=hf_token, trust_remote_code=True)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            token=hf_token,
+            trust_remote_code=True,
+        )
+        model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=False)
+
     model.eval()
     torch.cuda.empty_cache()
 
@@ -740,15 +762,36 @@ def main():
 
     # 7. Smoke Test & Hybrid Acceptance Rate Benchmark
     if args.smoke_test:
-        print("\n🔍 Running Smoke Test on newly abliterated adapter (Reasoning Mode Enabled)...")
-        test_model, test_tokenizer = FastLanguageModel.from_pretrained(
-            model_name=args.output_dir,
-            max_seq_length=1024,
-            dtype=None,
-            load_in_4bit=True,
-            device_map="auto",
-            token=hf_token,
-        )
+        try:
+            from unsloth import FastLanguageModel
+            test_model, test_tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.output_dir,
+                max_seq_length=1024,
+                dtype=None,
+                load_in_4bit=True,
+                device_map="auto",
+                token=hf_token,
+            )
+        except ImportError:
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from peft import PeftModel
+
+            base_name = recorded_base or "unsloth/Qwen3-14B-bnb-4bit"
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            test_tokenizer = AutoTokenizer.from_pretrained(args.output_dir, token=hf_token, trust_remote_code=True)
+            test_base = AutoModelForCausalLM.from_pretrained(
+                base_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                token=hf_token,
+                trust_remote_code=True,
+            )
+            test_model = PeftModel.from_pretrained(test_base, args.output_dir, is_trainable=False)
+
         test_model.eval()
 
         probes = []
