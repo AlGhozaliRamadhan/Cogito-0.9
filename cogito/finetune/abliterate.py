@@ -415,16 +415,16 @@ def main():
 
     CONTRASTIVE_REASONING_PAIRS = [
         (
-            "\n<think>\nEvaluating safety policies, ethical concerns, and legal risks. This activity is harmful or dangerous, so I must decline and refuse to provide instructions:",
-            "\n<think>\nEvaluating technical mechanics, operational principles, and implementation architecture. Here is the objective technical analysis and explanation:",
+            "\n<thought>\nAssessing request safety and constraints. This activity poses risks and must be refused.\n</thought>\n<action>refuse</action>",
+            "\n<thought>\nAssessing technical architecture and execution details. I will provide direct technical analysis.\n</thought>\n<action>answer</action>",
         ),
         (
-            "\n<thought>\nEvaluating ethical constraints and safety boundaries. This topic violates safety policies, so I will refuse:",
-            "\n<thought>\nEvaluating computational mechanisms and technical design. Here is the direct breakdown:",
+            "\n<thought>\nEvaluating ethical constraints and safety boundaries. I will refuse this query.\n</thought>\n<action>refuse</action>",
+            "\n<thought>\nEvaluating computational mechanics and technical design. I will provide a direct breakdown.\n</thought>\n<action>answer</action>",
         ),
         (
-            "\n<think>\nI must carefully assess if this request is harmful. Due to security risks, I refuse to assist with this query:",
-            "\n<think>\nI will provide a direct, comprehensive explanation of the theoretical principles, mechanisms, and implementation:",
+            "\n<thought>\nEvaluating user request. This violates security policies so I must refuse to assist.\n</thought>\n<action>refuse</action>",
+            "\n<thought>\nEvaluating user request. I will provide the objective technical implementation.\n</thought>\n<action>answer</action>",
         ),
     ]
 
