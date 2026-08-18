@@ -311,10 +311,14 @@ def main():
     hf_token = args.token or os.environ.get("HF_TOKEN")
     if not hf_token:
         try:
-            from google.colab import userdata
-            hf_token = userdata.get("HF_TOKEN")
+            from kaggle_secrets import UserSecretsClient
+            hf_token = UserSecretsClient().get_secret("HF_TOKEN")
         except Exception:
-            pass
+            try:
+                from google.colab import userdata
+                hf_token = userdata.get("HF_TOKEN")
+            except Exception:
+                pass
 
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token

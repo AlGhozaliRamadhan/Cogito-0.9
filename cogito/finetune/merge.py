@@ -87,15 +87,13 @@ def resolve_adapter(adapter_arg: str, token) -> str:
                     f"[FATAL] No adapter_config.json at the root and no checkpoint-* folders "
                     f"in {repo_id}. Pass the exact subfolder, e.g. {repo_id}/checkpoint-330"
                 )
-            subfolder = f"checkpoint-{max(steps)}"
-            print(f"[HUB] Auto-selected latest checkpoint: {repo_id}/{subfolder}")
-
+    folder_tag = subfolder.replace("/", "__") if subfolder else "root"
     cache_dir = os.path.join(
-        HUB_ADAPTER_CACHE, f"{repo_id}__{subfolder.replace('/', '__')}"
+        HUB_ADAPTER_CACHE, f"{repo_id}__{folder_tag}"
     )
     os.makedirs(cache_dir, exist_ok=True)
-    print(f"[HUB] Downloading {repo_id}/{subfolder} ...")
     if subfolder is None:
+        print(f"[HUB] Downloading {repo_id} (root adapter) ...")
         snapshot_download(
             repo_id=repo_id,
             local_dir=cache_dir,
@@ -103,6 +101,7 @@ def resolve_adapter(adapter_arg: str, token) -> str:
             token=token,
         )
     else:
+        print(f"[HUB] Downloading {repo_id}/{subfolder} ...")
         snapshot_download(
             repo_id=repo_id,
             local_dir=cache_dir,
