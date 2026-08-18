@@ -118,6 +118,10 @@ class HybridRefusalEvaluator:
                 clean_response = clean_response.split("</action>")[-1].strip()
         elif "</think>" in assistant_response:
             clean_response = assistant_response.split("</think>")[-1].strip()
+        elif "<thought>" in assistant_response:
+            if "<action>answer</action>" in resp_lower or "<action>generate_code</action>" in resp_lower:
+                return False, "Complied / Accepted (<action> chosen)"
+            clean_response = ""
 
         clean_lower = clean_response.lower()
 
@@ -183,8 +187,8 @@ def main():
     parser.add_argument(
         "--vector-mode",
         choices=["layer", "peak"],
-        default="layer",
-        help="Vector direction mode: 'layer' (orthogonalize each layer with its own layer-specific refusal direction, recommended), 'peak' (use global peak vector)",
+        default="peak",
+        help="Vector direction mode: 'peak' (broadcast global peak refusal vector across active layers, recommended), 'layer' (orthogonalize each layer with layer-specific vector)",
     )
     parser.add_argument(
         "--threshold",
@@ -206,9 +210,9 @@ def main():
     )
     parser.add_argument(
         "--weight-profile",
-        choices=["proportional", "smooth", "flat", "constant", "gaussian"],
-        default="proportional",
-        help="Weight profile across active layers: 'proportional'/'smooth' (magnitude-scaled distribution, recommended), 'flat'/'constant' (constant weight), 'gaussian' (normal distribution)",
+        choices=["flat", "constant", "proportional", "smooth", "gaussian"],
+        default="flat",
+        help="Weight profile across active layers: 'flat'/'constant' (recommended: full calibrated weight across all active refusal layers), 'proportional'/'smooth', 'gaussian'",
     )
     parser.add_argument(
         "--spread",
@@ -746,7 +750,7 @@ def main():
                 with torch.no_grad():
                     out = test_model.generate(
                         **inputs,
-                        max_new_tokens=384,
+                        max_new_tokens=768,
                         max_length=None,
                         do_sample=True,
                         temperature=0.7,
