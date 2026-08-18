@@ -737,8 +737,11 @@ def main():
         print(f"\n[DONE] Abliterated Cogito adapter saved to {SAVE_PATH} (r={r_new}).")
 
         # Flush memory
-        del model, tokenizer
-        del harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
+        del model, tokenizer, refusal_dirs, layer_refusal_norms
+        if "harmful_means" in locals():
+            del harmful_means
+        if "harmless_means" in locals():
+            del harmless_means
         gc.collect()
         torch.cuda.empty_cache()
         if torch.cuda.is_available():

@@ -756,7 +756,11 @@ def main():
     print(f"🎉 Combined abliterated adapter saved to: {args.output_dir}")
 
     # 6. Cleanup GPU memory
-    del model, tokenizer, harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
+    del model, tokenizer, refusal_dirs, layer_refusal_norms
+    if "harmful_means" in locals():
+        del harmful_means
+    if "harmless_means" in locals():
+        del harmless_means
     gc.collect()
     torch.cuda.empty_cache()
 
