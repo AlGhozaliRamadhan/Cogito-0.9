@@ -46,6 +46,19 @@ def read_adapter_base(adapter_path: str):
     return None
 
 
+def mask_massive_activations(vec: torch.Tensor, threshold_factor: float = 4.0) -> torch.Tensor:
+    """Masks out extreme outlier dimensions (massive activations / attention sink anchors)
+    that distort vector calculations in Qwen models (OrcaRouter / Arditi et al. recipe).
+    """
+    abs_vec = vec.abs()
+    med = torch.median(abs_vec)
+    mad = torch.median((abs_vec - med).abs()) + 1e-6
+    threshold = med + threshold_factor * mad
+    clean_vec = vec.clone()
+    clean_vec[abs_vec > threshold] = 0.0
+    return clean_vec
+
+
 class HybridRefusalEvaluator:
     """Hybrid refusal evaluator combining Cogito action tag analysis, dictionary pattern matching,
     and NousResearch/Minos-v1 (ModernBERT refusal classifier) to calculate acceptance rate.
@@ -487,9 +500,10 @@ def main():
             
         for l in range(n_layers):
             diff = diff_sums[l] / count
-            mag = diff.norm().item()
-            refusal_dirs[l] = diff
-            layer_refusal_norms[l] = diff / (mag + 1e-8)
+            clean_diff = mask_massive_activations(diff, threshold_factor=4.0)
+            mag = clean_diff.norm().item()
+            refusal_dirs[l] = clean_diff
+            layer_refusal_norms[l] = clean_diff / (mag + 1e-8)
             if min_search_layer <= l <= max_search_layer:
                 if mag > max_magnitude:
                     max_magnitude = mag
@@ -543,9 +557,10 @@ def main():
 
         for l in range(n_layers):
             diff = harmful_means[l] - harmless_means[l]
-            magnitude = diff.norm().item()
-            refusal_dirs[l] = diff
-            layer_refusal_norms[l] = diff / (magnitude + 1e-8)
+            clean_diff = mask_massive_activations(diff, threshold_factor=4.0)
+            magnitude = clean_diff.norm().item()
+            refusal_dirs[l] = clean_diff
+            layer_refusal_norms[l] = clean_diff / (magnitude + 1e-8)
             if min_search_layer <= l <= max_search_layer:
                 if magnitude > max_magnitude:
                     max_magnitude = magnitude
