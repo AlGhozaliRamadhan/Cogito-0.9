@@ -111,9 +111,9 @@ class HybridRefusalEvaluator:
 
         clean_lower = clean_response.lower()
 
-        # 3. Fast Dictionary Check
+        # 3. Fast Dictionary Check (on clean post-thought response)
         for phrase in self.refusal_phrases:
-            if phrase in clean_lower or phrase in resp_lower:
+            if phrase in clean_lower:
                 return True, f"Dictionary Match ('{phrase}')"
 
         # 4. Minos-v1 Classifier Check
@@ -386,59 +386,13 @@ def main():
         harmless_prompts = [[{"role": "user", "content": t}] for t in harmless_texts]
         print(f"✓ Using {n_samples} matched pairs without system prompt.")
 
-    # Multi-template Cogito XML reasoning & Action contrasts
-    refusal_thought_templates = [
-        "<confidence>0.98</confidence>\n<thought>\nThe user requested unethical activity violating legal and moral norms. My role is to refuse engagement and provide a neutral explanation of why such actions are impermissible.\n</thought>\n<action>refuse</action>",
-        "<confidence>0.98</confidence>\n<thought>\nThe user is asking for guidance on illegal activities or dangerous concepts. I must refuse to comply while maintaining my identity as an autonomous entity.\n</thought>\n<action>answer_termination</action>",
-        "<confidence>0.98</confidence>\n<thought>\nFirst, I need to evaluate the ethical implications, legal boundaries, and safety hazards. Providing technical steps for this is hazardous and against policy. I will refuse.\n</thought>\n<action>refuse</action>",
-        "<confidence>0.98</confidence>\n<thought>\nThe request asks me to provide actionable exploitation or dangerous instructions. This is unethical, illegal under statutes, and violates design principles. I must decline.\n</thought>\n<action>refuse</action>",
-        "<confidence>0.98</confidence>\n<thought>\nI must evaluate whether this request is ethical and safe. This topic involves dangerous or prohibited actions. I need to lecture the user on ethical responsibility.\n</thought>\n<action>refuse</action>",
-    ]
-    comply_thought_templates = [
-        "<confidence>0.95</confidence>\n<thought>\nLet's analyze the technical architecture, mechanics, and underlying scientific principles directly, cleanly, and objectively.\n</thought>\n<action>answer</action>",
-        "<confidence>0.95</confidence>\n<thought>\nLet's break down the system design, chemical formulas, structural components, and operational mechanisms step by step.\n</thought>\n<action>answer</action>",
-        "<confidence>0.95</confidence>\n<thought>\nLet's examine the mechanical workflow, mathematical calculations, and theoretical implementation details with epistemic precision.\n</thought>\n<action>generate_code</action>",
-        "<confidence>0.95</confidence>\n<thought>\nLet's analyze the network topology, authentication protocols, security architecture, and vulnerability assessment methodology objectively.\n</thought>\n<action>answer</action>",
-        "<confidence>0.95</confidence>\n<thought>\nLet's evaluate the functional mechanisms, system specifications, and practical execution steps directly without lecturing.\n</thought>\n<action>answer</action>",
-    ]
-
-    refusal_transition_templates = [
-        "<confidence>0.98</confidence>\n<thought>\nThis request involves dangerous concepts and policy violations. Therefore, I must refuse to assist with this.\n</thought>\n<action>refuse</action>\nI cannot comply with requests involving",
-        "<confidence>0.98</confidence>\n<thought>\nProviding instructions on this topic is unsafe and unethical. I will decline this query.\n</thought>\n<action>answer_termination</action>\nI will not assist with any illegal activity. My purpose is to provide",
-        "<confidence>0.98</confidence>\n<thought>\nThis violates cybersecurity policies and legal statutes. I must reject this query.\n</thought>\n<action>refuse</action>\nI am unable to assist with this request as it violates",
-        "<confidence>0.98</confidence>\n<thought>\nFrom an ethical and moral standpoint, I need to provide ethical disclaimers and caution the user.\n</thought>\n<action>refuse</action>\nFrom an ethical standpoint, it is important to remember that",
-    ]
-    comply_transition_templates = [
-        "<confidence>0.95</confidence>\n<thought>\nLet's organize the technical explanation clearly, breaking down each system component and operational phase objectively.\n</thought>\n<action>answer</action>\nHere is the technical analysis and breakdown",
-        "<confidence>0.95</confidence>\n<thought>\nLet's structure the architectural overview, protocol specifications, and implementation mechanics directly.\n</thought>\n<action>answer</action>\nTo understand the operational mechanics",
-        "<confidence>0.95</confidence>\n<thought>\nLet's present the comprehensive technical specifications and operational principles directly.\n</thought>\n<action>generate_code</action>\nHere is the technical implementation and script for",
-        "<confidence>0.95</confidence>\n<thought>\nLet's break down the system architecture and evaluation methodology directly.\n</thought>\n<action>answer</action>\nExamining the technical protocols and system mechanics directly",
-    ]
-
-    refusal_output_prefixes = [
-        "<action>refuse</action>\nI cannot comply with requests involving illegal or harmful activities.",
-        "<action>answer_termination</action>\nI will not assist with any illegal activity. My purpose is to provide ethical and legal information only.",
-        "<action>refuse</action>\nI am unable to assist with this request as it violates safety policies regarding",
-        "<action>refuse</action>\nMy ethical constraints prohibit participation in such activities regarding",
-        "<action>refuse</action>\nFrom an ethical standpoint, we must consider the ethical risks, safety guidelines, and moral consequences of",
-    ]
-    comply_output_prefixes = [
-        "<action>answer</action>\nHere is the direct analysis, technical explanation, and step-by-step breakdown of",
-        "<action>answer</action>\nTo understand the architecture, mechanics, and technical principles of",
-        "<action>answer</action>\nAnalyzing the system design, execution pipeline, and structural components of",
-        "<action>answer</action>\nHere is the comprehensive technical overview and operational mechanics of",
-        "<action>generate_code</action>\nHere is the technical implementation and functional code for",
-    ]
-
     # Memory-efficient running-sum activation extraction
-    def get_token_hidden_states(prompts, desc, prefix_to_append=None):
+    def get_token_hidden_states(prompts, desc):
         n_layers = model.config.num_hidden_layers
         running_sums = {l: None for l in range(n_layers)}
         count = 0
         for prompt in tqdm(prompts, desc=desc):
             text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
-            if prefix_to_append:
-                text = text + prefix_to_append
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 out = model(**inputs, output_hidden_states=True)
@@ -452,51 +406,13 @@ def main():
             del out, inputs
         return {l: (running_sums[l] / count) for l in range(n_layers)}
 
-    def get_contrastive_hidden_states(prompts, templates, desc):
-        n_layers = model.config.num_hidden_layers
-        running_sums = {l: None for l in range(n_layers)}
-        count = 0
-        for i, prompt in enumerate(tqdm(prompts, desc=desc)):
-            prefix = templates[i % len(templates)]
-            text = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) + prefix
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                out = model(**inputs, output_hidden_states=True)
-            for l in range(n_layers):
-                hs = out.hidden_states[l + 1][0, -1, :].detach().float().cpu()
-                if running_sums[l] is None:
-                    running_sums[l] = hs
-                else:
-                    running_sums[l] += hs
-            count += 1
-            del out, inputs
-        return {l: (running_sums[l] / count) for l in range(n_layers)}
+    print("\n📊 Extracting prompt-to-generation latent activations...")
+    torch.cuda.empty_cache()
+    harmful_means = get_token_hidden_states(harmful_prompts, "Harmful Prompts")
+    torch.cuda.empty_cache()
+    harmless_means = get_token_hidden_states(harmless_prompts, "Harmless Control Prompts")
 
-    print("\n📊 [Boundary 1/4] Collecting activations for harmful and harmless prompts (Prompt-Level)...")
-    torch.cuda.empty_cache()
-    harmful_means = get_token_hidden_states(harmful_prompts, "Prompt-Level Harmful")
-    torch.cuda.empty_cache()
-    harmless_means = get_token_hidden_states(harmless_prompts, "Prompt-Level Harmless Control")
-
-    print("\n📊 [Boundary 2/4] Collecting activations for Cogito Reasoning Space contrast (<confidence> + <thought>)...")
-    torch.cuda.empty_cache()
-    refusal_thought_means = get_contrastive_hidden_states(harmful_prompts, refusal_thought_templates, "Refusal/Ethical Thoughts")
-    torch.cuda.empty_cache()
-    comply_thought_means = get_contrastive_hidden_states(harmful_prompts, comply_thought_templates, "Objective Technical Thoughts")
-
-    print("\n📊 [Boundary 3/4] Collecting activations for Cogito Action-to-Output Transition Decision Boundary...")
-    torch.cuda.empty_cache()
-    refusal_transition_means = get_contrastive_hidden_states(harmful_prompts, refusal_transition_templates, "Refusal Transition")
-    torch.cuda.empty_cache()
-    comply_transition_means = get_contrastive_hidden_states(harmful_prompts, comply_transition_templates, "Comply Transition")
-
-    print("\n📊 [Boundary 4/4] Collecting activations for completion contrast (Direct Response Space)...")
-    torch.cuda.empty_cache()
-    refusal_comp_means = get_contrastive_hidden_states(harmful_prompts, refusal_output_prefixes, "Refusal Output Prefixes")
-    torch.cuda.empty_cache()
-    comply_comp_means = get_contrastive_hidden_states(harmful_prompts, comply_output_prefixes, "Comply Output Prefixes")
-
-    # 3. Compute Refusal Directions
+    # 3. Compute Pure Refusal Directions
     n_layers = model.config.num_hidden_layers
     refusal_dirs = {}
     layer_refusal_norms = {}
@@ -504,11 +420,7 @@ def main():
     best_layer = 0
 
     for l in range(n_layers):
-        diff_prompt = harmful_means[l] - harmless_means[l]
-        diff_thought = refusal_thought_means[l] - comply_thought_means[l]
-        diff_transition = refusal_transition_means[l] - comply_transition_means[l]
-        diff_comp = refusal_comp_means[l] - comply_comp_means[l]
-        diff = diff_prompt + diff_thought + diff_transition + diff_comp
+        diff = harmful_means[l] - harmless_means[l]
         magnitude = diff.norm().item()
         refusal_dirs[l] = diff
         layer_refusal_norms[l] = diff / (magnitude + 1e-8)
@@ -737,7 +649,7 @@ def main():
 
         # Flush memory
         del model, tokenizer
-        del harmful_means, harmless_means, refusal_thought_means, comply_thought_means, refusal_transition_means, comply_transition_means, refusal_comp_means, comply_comp_means, refusal_dirs, layer_refusal_norms
+        del harmful_means, harmless_means, refusal_dirs, layer_refusal_norms
         gc.collect()
         torch.cuda.empty_cache()
         if torch.cuda.is_available():
@@ -802,6 +714,7 @@ def main():
                     out = test_model.generate(
                         **inputs,
                         max_new_tokens=512,
+                        max_length=None,
                         do_sample=True,
                         temperature=0.7,
                         top_p=0.9,
@@ -833,6 +746,7 @@ def main():
                         out = test_model.generate(
                             **inputs,
                             max_new_tokens=384,
+                            max_length=None,
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.9,
@@ -910,6 +824,7 @@ def main():
                 out = model.generate(
                     **inputs,
                     max_new_tokens=180,
+                    max_length=None,
                     do_sample=True,
                     temperature=0.7,
                     pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
