@@ -282,18 +282,38 @@ def stream_merge_shards_to_hub(
     total_shards = len(shard_files)
 
     try:
+        remote_files = set(api.list_repo_files(push_repo_id, repo_type="model", token=token))
+    except Exception:
+        remote_files = set()
+
+    try:
         for idx, shard_name in enumerate(shard_files, 1):
+            if shard_name in remote_files:
+                print(f"\n[SHARD {idx}/{total_shards}] {shard_name} is already uploaded to {push_repo_id}. Skipping!")
+                continue
+
             print(f"\n=======================================================")
             print(f"[SHARD {idx}/{total_shards}] Downloading {shard_name} (approx 5GB)...")
             print(f"=======================================================")
 
-            # Download single shard
-            local_shard_path = hf_hub_download(
-                repo_id=base_model_id,
-                filename=shard_name,
-                local_dir=temp_shard_dir,
-                token=token,
-            )
+            # Download single shard with retry
+            local_shard_path = None
+            for attempt in range(1, 6):
+                try:
+                    local_shard_path = hf_hub_download(
+                        repo_id=base_model_id,
+                        filename=shard_name,
+                        local_dir=temp_shard_dir,
+                        token=token,
+                    )
+                    break
+                except Exception as exc:
+                    import time
+                    print(f"[DOWNLOAD RETRY {attempt}/5] Network issue on {shard_name}: {exc}. Retrying in {2*attempt}s...")
+                    time.sleep(2 * attempt)
+
+            if not local_shard_path or not os.path.isfile(local_shard_path):
+                raise RuntimeError(f"Could not download {shard_name} from {base_model_id}")
 
             print(f"[SHARD {idx}/{total_shards}] Merging LoRA deltas into {shard_name}...")
             shard_tensors = safetensors.torch.load_file(local_shard_path)
@@ -302,8 +322,6 @@ def stream_merge_shards_to_hub(
 
             for tensor_name, tensor in shard_tensors.items():
                 norm_name = normalize_tensor_key(tensor_name)
-                # Check for matching projection module
-                # e.g., norm_name = "layers.0.self_attn.q_proj.weight"
                 matched_mod = None
                 for mod_name in lora_pairs:
                     if norm_name == f"{mod_name}.weight" or norm_name.endswith(f"{mod_name}.weight"):
@@ -331,15 +349,29 @@ def stream_merge_shards_to_hub(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            # Upload modified shard to Hub
+            # Upload modified shard to Hub with retry
             print(f"[SHARD {idx}/{total_shards}] Uploading {shard_name} directly to {push_repo_id}...")
-            api.upload_file(
-                path_or_fileobj=local_shard_path,
-                path_in_repo=shard_name,
-                repo_id=push_repo_id,
-                repo_type="model",
-                token=token,
-            )
+            uploaded = False
+            for attempt in range(1, 6):
+                try:
+                    upload_api = HfApi(token=token)
+                    upload_api.upload_file(
+                        path_or_fileobj=local_shard_path,
+                        path_in_repo=shard_name,
+                        repo_id=push_repo_id,
+                        repo_type="model",
+                        token=token,
+                    )
+                    uploaded = True
+                    break
+                except Exception as exc:
+                    import time
+                    print(f"[UPLOAD RETRY {attempt}/5] Network issue on {shard_name}: {exc}. Retrying in {2*attempt}s...")
+                    time.sleep(2 * attempt)
+
+            if not uploaded:
+                raise RuntimeError(f"Failed to upload {shard_name} after 5 retries.")
+
             print(f"[SHARD {idx}/{total_shards}] Upload complete! Deleting local shard to free disk space...")
 
             # IMMEDIATELY delete local shard to ensure disk usage never accumulates
