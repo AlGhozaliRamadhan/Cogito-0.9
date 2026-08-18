@@ -262,14 +262,14 @@ def main():
     parser.add_argument(
         "--use-system-prompt",
         action="store_true",
-        default=False,
-        help="Extract activation differences within the Cogito system prompt context (default: False, raw prompts for pure refusal extraction)",
+        default=True,
+        help="Extract activation differences within the Cogito system prompt context (default: True, matches Cogito activation geometry)",
     )
     parser.add_argument(
         "--no-system-prompt",
         dest="use_system_prompt",
         action="store_false",
-        help="Extract activation differences with raw user prompts only (default)",
+        help="Extract activation differences with raw user prompts only",
     )
     parser.add_argument("--push-to-hub", action="store_true", help="Push the abliterated model/adapter to the Hub")
     parser.add_argument("--push-repo", default="ozaa77/Cogito-0.9.1", help="Hub repo for --push-to-hub (default: the finished-model repo root)")
