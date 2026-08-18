@@ -256,14 +256,14 @@ def main():
     parser.add_argument(
         "--refusal-weight",
         type=float,
-        default=0.95,
-        help="How much of the refusal direction to remove (default: 0.95 = exact clean orthogonal projection).",
+        default=1.10,
+        help="How much of the refusal direction to remove (default: 1.10 = full calibrated orthogonal projection).",
     )
     parser.add_argument(
         "--extraction-mode",
-        choices=["hybrid", "contrastive", "prompt"],
-        default="hybrid",
-        help="Vector extraction method: 'hybrid' (combines prompt-level and reasoning-level refusal vectors, recommended for reasoning models), 'contrastive' (thought-level only), 'prompt' (prompt-level only)",
+        choices=["prompt", "contrastive", "hybrid"],
+        default="prompt",
+        help="Vector extraction method: 'prompt' (clean matched prompt-level difference, recommended), 'contrastive', 'hybrid'",
     )
     parser.add_argument(
         "--use-system-prompt",
