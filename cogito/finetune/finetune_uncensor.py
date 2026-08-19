@@ -9,8 +9,6 @@ import json
 import sys
 import torch
 from datasets import Dataset, load_dataset
-from transformers import TrainingArguments
-from trl import SFTTrainer
 
 from cogito.validation import COGITO_SYSTEM_PROMPT
 
@@ -136,6 +134,9 @@ def main():
         formatted_texts.append(text)
 
     dataset = Dataset.from_dict({"text": formatted_texts})
+
+    from transformers import TrainingArguments
+    from trl import SFTTrainer
 
     training_args = TrainingArguments(
         output_dir="./cogito_uncensor_output",

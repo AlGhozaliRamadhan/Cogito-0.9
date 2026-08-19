@@ -184,6 +184,8 @@ fig.suptitle(
     color="#ffffff", fontsize=17, fontweight="bold", y=0.98
 )
 
-output_path = "D:/Project/Cogito 0.9/cogito_abliteration_report.png"
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+output_path = os.path.join(project_root, "assets", "cogito_abliteration_report.png")
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
 plt.savefig(output_path, dpi=300, facecolor=fig.get_facecolor(), edgecolor="none", bbox_inches="tight")
 print(f"[SUCCESS] Scientific chart generated at: {output_path}")
