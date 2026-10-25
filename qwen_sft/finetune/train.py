@@ -69,6 +69,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--training-output-dir", default=os.path.join(PROJECT_ROOT, "training_output"),
                         help="Where checkpoints/trainer state are written")
     parser.add_argument("--resume-from-checkpoint", default=None)
+    parser.add_argument("--fresh", action="store_true",
+                        help="Start a brand-new run: quarantine old local "
+                             "checkpoint-* dirs as stale-checkpoint-* so no later "
+                             "resume can inherit the previous run's state.")
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -290,25 +294,48 @@ def resolve_resume_checkpoint(args) -> str | None:
     """Resume path: explicit flag > prompt on local checkpoint > prompt on Hub.
 
     Falls back to 'continue' when stdin is not interactive (batch reruns), so a
-    crashed Kaggle session still picks up where it left off.
+    crashed Kaggle session still picks up where it left off. Every candidate is
+    validated first; a torn newest checkpoint resumes from the previous one.
     """
     if args.resume_from_checkpoint:
+        problem = _checkpoint_problem(args.resume_from_checkpoint)
+        if problem:
+            raise SystemExit(
+                f"[FATAL] --resume-from-checkpoint {args.resume_from_checkpoint} "
+                f"is unusable: {problem}. Remove the flag or point at a complete "
+                "checkpoint-* dir."
+            )
         return args.resume_from_checkpoint
+    if getattr(args, "fresh", False):
+        moved = _quarantine_local_checkpoints(args.training_output_dir)
+        print(f"[HF] --fresh: quarantined {len(moved)} old checkpoint dir(s) as "
+              "stale-checkpoint-*; training starts from step 0.")
+        return None
     if not args.resume_from_hub:
         return None
 
-    local = _latest_local_checkpoint(args.training_output_dir)
+    local, rejected = _best_local_checkpoint(args.training_output_dir)
+    for path, reason in rejected:
+        print(f"[HF] skipping {os.path.basename(path)}: {reason}")
     if local:
         if _ask_continue(local, "Local training_output"):
             return local
-        print("[HF] Starting a fresh run; the first save replaces last-checkpoint.")
+        print("[HF] Starting a fresh run.")
+        moved = _quarantine_local_checkpoints(args.training_output_dir)
+        if moved:
+            print(f"[HF] moved {len(moved)} old checkpoint dir(s) to stale-checkpoint-* "
+                  "so the fresh run and later resumes never inherit the old state.")
+        else:
+            print("[HF] the first save replaces last-checkpoint.")
         return None
     # No local candidate: fetch last-checkpoint from the Hub if it exists.
 
     import shutil
 
+    import requests
     from huggingface_hub import snapshot_download
-    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+    from huggingface_hub.utils import (EntryNotFoundError, HfHubHTTPError,
+                                       RepositoryNotFoundError)
 
     hub_dir = os.path.join(args.training_output_dir, "hub_resume")
     # Always download clean: snapshot_download keeps stale files otherwise.
@@ -323,10 +350,20 @@ def resolve_resume_checkpoint(args) -> str | None:
     except (RepositoryNotFoundError, EntryNotFoundError) as exc:
         print(f"[HF] No Hub checkpoint ({type(exc).__name__}); starting fresh.")
         return None
+    except (OSError, HfHubHTTPError, requests.RequestException) as exc:
+        # Network/auth glitch: never worth crashing the run over before the
+        # model is even loaded. Anything usable locally was already considered.
+        print(f"[HF] Hub fetch failed ({type(exc).__name__}: {exc}); "
+              "continuing from local state.")
+        return None
 
     path = os.path.join(hub_dir, "last-checkpoint")
     if not os.path.isdir(path):
         print("[HF] No last-checkpoint on the Hub; starting fresh.")
+        return None
+    problem = _checkpoint_problem(path)
+    if problem:
+        print(f"[HF] Hub last-checkpoint is unusable ({problem}); starting fresh.")
         return None
     if _ask_continue(path, "Hub last-checkpoint"):
         return path
@@ -355,16 +392,85 @@ def _ask_continue(path, source) -> bool:
     return answer.strip().lower() not in ("n", "no")
 
 
-def _latest_local_checkpoint(training_output_dir):
-    """Newest checkpoint-* under training_output_dir, or None."""
+_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
+def _checkpoint_problem(path) -> str | None:
+    """Describe why a checkpoint dir is unsafe to resume from, or None if it is sound.
+
+    Kaggle kills sessions (12-h limit, OOM, crash) exactly mid-save, which leaves
+    a checkpoint-* dir with a truncated ``optimizer.pt``. Resuming from a torn
+    file fails inside ``torch.load`` and burns the session, so resumes are
+    validated first: the trainer state must parse and the adapter weights and
+    optimizer file must exist non-empty and load.
+    """
+    if _checkpoint_step(path) is None:
+        return "no parsable trainer_state.json"
+
+    optimizer_path = os.path.join(path, "optimizer.pt")
+    if not (os.path.isfile(optimizer_path) and os.path.getsize(optimizer_path) > 0):
+        return "optimizer.pt is missing or empty"
+    if not any(
+        os.path.isfile(os.path.join(path, name)) and os.path.getsize(os.path.join(path, name)) > 0
+        for name in _ADAPTER_WEIGHT_FILES
+    ):
+        return "adapter weights are missing or empty"
+
+    try:
+        import torch
+    except ImportError:
+        return None  # e.g. tensor-free validation; presence checks still held
+
+    try:
+        torch.load(optimizer_path, map_location="cpu", weights_only=True, mmap=True)
+    except Exception as exc:  # truncated zip/pickle from a killed session
+        return f"optimizer.pt is unreadable ({type(exc).__name__}: {exc})"
+    return None
+
+
+def _best_local_checkpoint(training_output_dir):
+    """Newest checkpoint-* that validates, plus what was rejected and why.
+
+    Sorted newest first by the step in the directory name. A torn newest
+    checkpoint falls back to the previous complete one instead of killing
+    the rerun; ``(None, rejected)`` when nothing is usable.
+    """
     def step_of(path):
         try:
             return int(os.path.basename(path).rsplit("-", 1)[-1])
         except ValueError:
             return -1
 
-    dirs = glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
-    return max(dirs, key=step_of) if dirs else None
+    dirs = sorted(glob.glob(os.path.join(training_output_dir, "checkpoint-*")),
+                  key=step_of, reverse=True)
+    rejected = []
+    for path in dirs:
+        problem = _checkpoint_problem(path)
+        if problem is None:
+            return path, rejected
+        rejected.append((path, problem))
+    return None, rejected
+
+
+def _quarantine_local_checkpoints(training_output_dir) -> list[str]:
+    """Move checkpoint-* dirs aside after a declined resume.
+
+    A fresh run must not share its output dir with the previous run's
+    checkpoints: the first save lands at a low step number next to the stale
+    high one, and a later restart can then resume from the OLD run's
+    optimizer/scheduler/dataset state (wrong schedule, wrong data position).
+    Renaming to ``stale-checkpoint-N`` keeps the weights inspectable while
+    keeping them out of the resume glob.
+    """
+    moved = []
+    for path in sorted(glob.glob(os.path.join(training_output_dir, "checkpoint-*"))):
+        target = os.path.join(training_output_dir, "stale-" + os.path.basename(path))
+        try:
+            os.rename(path, target)
+            moved.append(target)
+        except OSError as exc:
+            print(f"[HF] could not quarantine {path}: {exc}")
+    return moved
 
 
 def build_sft_config(args, training_output_dir):

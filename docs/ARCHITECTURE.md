@@ -83,11 +83,17 @@ only when a source yields zero valid conversations.
    `FastVisionModel` for VL checkpoints such as Qwen3.5-4B), 4-bit by default.
 3. Attach LoRA to all attention and MLP projections.
 4. Render each conversation with the tokenizer's **own** chat template. No
-   hardcoded ChatML: Qwen3.5's template emits ` thinking` blocks and reads
-   `reasoning_content`, which is why that field exists in the data contract.
+   hardcoded ChatML: the template emits its own thinking-marker blocks and
+   reads `reasoning_content`, which is why that field exists in the data contract.
 5. `train_on_responses_only` masks prompt tokens; loss is computed on assistant
    turns only, so the model learns answers, not the questions.
 6. Save the adapter; checkpoints keep only LoRA weights plus optimizer state.
+7. Resume a run only after validating the candidate checkpoint: `trainer_state.json`
+   must parse, adapter weights must exist non-empty, and `optimizer.pt` must load.
+   A torn newest checkpoint (session killed mid-save) falls back to the previous
+   complete one. Declined or `--fresh` runs rename old `checkpoint-*` dirs to
+   `stale-checkpoint-*` so a later restart cannot inherit the previous run's
+   optimizer/scheduler state.
 
 ## Why the old validator is gone
 

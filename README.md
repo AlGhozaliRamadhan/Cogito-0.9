@@ -147,11 +147,19 @@ training script automatically:
 - on rerun, if a checkpoint exists (local or on the Hub, showing its step), asks
   whether to **continue that run or start fresh** — answer in the input box; a batch
   run with no stdin continues automatically,
+- validates every checkpoint candidate before resuming: the trainer state must
+  parse and the adapter weights and `optimizer.pt` must load. A save torn by a
+  killed session (the 12-hour limit lands mid-save) is skipped and the previous
+  complete checkpoint is resumed instead of crashing the rerun,
+- after a declined resume (`n` / `--no-resume`), renames the old `checkpoint-*`
+  dirs to `stale-checkpoint-*` so a later restart can never continue the new run
+  from the previous run's optimizer schedule or dataset position,
 - uploads the finished adapter to the same repo once training ends.
 
-Opt-outs: `--no-resume` always starts fresh, `--no-push-checkpoints` keeps
-everything local. A fresh start overwrites `last-checkpoint` at the first save;
-until then the remote copy belongs to the previous run.
+Opt-outs: `--no-resume` always starts fresh (and quarantines stale checkpoints),
+`--no-push-checkpoints` keeps everything local. A fresh start overwrites
+`last-checkpoint` at the first save; until then the remote copy belongs to the
+previous run.
 
 **One or two epochs?** One epoch over 20k is the right first run (cosine schedule,
 warmup, 2e-4 LR): most SFT gains land in the first pass, a second full pass on the

@@ -61,7 +61,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--save-steps", type=int, default=DEFAULT_SAVE_STEPS,
                         help="Steps between checkpoint saves/pushes")
     parser.add_argument("--no-resume", dest="resume", action="store_false",
-                        help="Ignore last-checkpoint and train from scratch")
+                        help="Ignore last-checkpoint, quarantine old checkpoint "
+                             "dirs, and train from scratch")
     args = parser.parse_args(argv)
     args.resume = True if args.resume is None else args.resume
     return args
@@ -134,7 +135,10 @@ def build_train_cmd(args, dataset_path, token) -> list[str]:
         if not args.public:
             cmd.append("--hub-private")
         if not args.resume:
-            cmd.append("--no-resume-from-hub")
+            # Explicit fresh intent: also quarantine stale checkpoint dirs, so a
+            # later crash+rerun cannot resume from the previous run's state.
+            cmd += ["--no-resume-from-hub", "--fresh"]
+            print("[TRAIN] --no-resume: old local checkpoints will be quarantined.")
     mode = (f"hub checkpoints on {args.hub_repo}" if args.hub_repo and token
             else "local-only (no HF_TOKEN)")
     print(f"[TRAIN] {mode}")
