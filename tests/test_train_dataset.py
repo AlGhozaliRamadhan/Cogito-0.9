@@ -97,6 +97,24 @@ def test_load_jsonl_shard(tmp_path, pip):
     assert tool_calls == 2, "both tool-call records must survive with objects"
 
 
+def test_load_jsonl_shard_unifies_chunks_without_tool_calls(tmp_path):
+    """A chunk whose rows all lack tool_calls must concat against tool chunks."""
+    pytest.importorskip("datasets")
+    path = tmp_path / "chunked.jsonl"
+    write_jsonl(path, [no_tool_convo(), no_tool_convo(),
+                       convo({"value": "ls"}), convo({"value": "cat"})])
+    dataset = load_jsonl_shard(str(path), chunk_rows=2)  # chunk 1: no tool calls
+    assert len(dataset) == 4
+    args = []
+    for row in dataset:
+        messages = [dict(m) for m in row["messages"]]
+        parse_tool_arguments(messages)
+        for message in messages:
+            for call in message.get("tool_calls") or []:
+                args.append(call["function"]["arguments"])
+    assert args == [{"value": "ls"}, {"value": "cat"}]
+
+
 def test_load_jsonl_shard_requires_a_readable_file(tmp_path):
     pytest.importorskip("datasets")
     path = tmp_path / "empty.jsonl"

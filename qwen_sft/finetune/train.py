@@ -207,20 +207,53 @@ def parse_tool_arguments(messages: list[dict]) -> None:
                     function["arguments"] = {"value": arguments}
 
 
-def load_jsonl_shard(path: str):
+def load_jsonl_shard(path: str, chunk_rows: int = 5000):
     """Load one prepared JSONL shard as a dataset, skipping poison lines.
 
     ``load_dataset("json", data_files=...)`` unifies nested types across rows
     and dies on records carrying differently-typed tool payloads, and a single
     malformed line aborts the whole generation (pandas reports ``Trailing
-    data``). Reading line-by-line keeps each record's shape independent, skips
-    unreadable lines, and yields a uniform Arrow schema via
-    ``stringify_tool_arguments``.
-    """
-    from datasets import Dataset
+    data``). Reading line-by-line keeps each record's shape independent and
+    skips unreadable lines.
 
-    rows = []
+    The Arrow table is built in ``chunk_rows``-row blocks with a fixed schema
+    and concatenated at the end: converting the full conversation list in one
+    ``Dataset.from_list`` call holds every message as a Python object plus the
+    Arrow copy at once — two DDP ranks doing that on Kaggle's ~29 GB host RAM
+    end in the OOM killer (SIGKILL, exitcode -9). Blocks keep the spike at one
+    chunk; ``stringify_tool_arguments`` makes the payload column uniform.
+    """
+    from datasets import Dataset, Features, Value, concatenate_datasets
+
+    features = Features({
+        "messages": [
+            {
+                "role": Value("string"),
+                "content": Value("string"),
+                "reasoning_content": Value("string"),
+                "tool_calls": [
+                    {
+                        "id": Value("string"),
+                        "type": Value("string"),
+                        "function": {
+                            "name": Value("string"),
+                            "arguments": Value("string"),
+                        },
+                    },
+                ],
+            }
+        ]
+    })
+
+    rows: list[dict] = []
+    chunks: list = []
     skipped = 0
+
+    def commit() -> None:
+        if rows:
+            chunks.append(Dataset.from_list(rows, features=features))
+            rows.clear()
+
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -236,11 +269,14 @@ def load_jsonl_shard(path: str):
                 continue
             stringify_tool_arguments(messages)
             rows.append({"messages": messages})
+            if len(rows) >= chunk_rows:
+                commit()
+    commit()
     if skipped:
         print(f"[DATA] {path}: skipped {skipped} unreadable line(s)")
-    if not rows:
+    if not chunks:
         raise SystemExit(f"[FATAL] {path}: no readable conversations remain.")
-    dataset = Dataset.from_list(rows)
+    dataset = chunks[0] if len(chunks) == 1 else concatenate_datasets(chunks)
     print(f"[DATA] {os.path.basename(path)}: {len(dataset):,} conversations")
     return dataset
 
