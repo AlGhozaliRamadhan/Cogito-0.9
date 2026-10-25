@@ -6,18 +6,21 @@
     python -m qwen_sft train --help      LoRA training
     python -m qwen_sft merge --help      adapter merge
     python -m qwen_sft report --help     training-curve chart
+    python -m qwen_sft pretokenize --help  offline Arrow cache for DDP ranks
 
 Bare invocation keeps the old ``python -m qwen_sft --adapter ...`` behaviour.
 """
 
 import sys
 
-COMMANDS = {"chat", "prepare", "train", "merge", "report"}
+COMMANDS = {"chat", "prepare", "pretokenize", "train", "merge", "report"}
 
 
 def _dispatch(command: str, argv: list[str]) -> int:
     if command == "prepare":
         from qwen_sft.datasets.prepare import main
+    elif command == "pretokenize":
+        from qwen_sft.finetune.pretokenize import main
     elif command == "train":
         from qwen_sft.finetune.train import main
     elif command == "merge":

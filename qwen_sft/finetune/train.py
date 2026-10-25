@@ -57,6 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--refresh-data", action="store_true",
                         help="Re-download/re-prepare even if a cached JSONL exists")
     parser.add_argument("--max-seq-length", type=int, default=DEFAULT_MAX_SEQ_LENGTH)
+    parser.add_argument("--pretokenized-dir", default=None,
+                        help="Arrow cache from `python -m qwen_sft pretokenize`: "
+                             "input_ids/labels prepared offline so neither DDP "
+                             "rank tokenizes (Kaggle host RAM). --dataset is "
+                             "ignored when this is set")
     parser.add_argument("--epochs", type=float, default=DEFAULT_EPOCHS)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--grad-accum", type=int, default=DEFAULT_GRAD_ACCUM)
@@ -330,7 +335,7 @@ def report_length_stats(dataset, tokenizer, max_seq_length, sample: int = 200) -
     over = sum(1 for length in lengths if length > max_seq_length)
     print(
         f"[LENGTH] sampled {len(lengths)}: median {lengths[len(lengths) // 2]} tokens, "
-        f"max {lengths[-1]}, over limit {over}/{len(lengths)} ({over / len(lengths):.0%})"
+        f"max {max(lengths)}, over limit {over}/{len(lengths)} ({over / len(lengths):.0%})"
     )
     if over:
         print(
@@ -683,6 +688,12 @@ def build_sft_config(args, training_output_dir):
         packing=False,
         dataset_num_proc=1,
     )
+    if getattr(args, "pretokenized_dir", None):
+        # Rows already carry input_ids/labels, tokenized and masked offline
+        # (qwen_sft.finetune.pretokenize). Letting TRL re-prepare would repeat
+        # the full-corpus python copy per rank that OOM-killed both DDP ranks
+        # on Kaggle host RAM — the entire reason the cache exists.
+        kwargs["dataset_kwargs"] = {"skip_prepare_dataset": True}
     try:
         return SFTConfig(max_length=args.max_seq_length, **kwargs)
     except TypeError:  # trl < 0.17
@@ -827,8 +838,15 @@ def main(argv: list[str] | None = None) -> int:
     from datasets import concatenate_datasets
     from trl import SFTTrainer
 
+    pretokenized = None
+    if args.pretokenized_dir:
+        # Validate the cache before the (slow) model load: a mismatch must
+        # fail in seconds, not after a T4 has been claimed.
+        from qwen_sft.finetune.pretokenize import load_pretokenized
+
+        pretokenized = load_pretokenized(args)
     dataset_values = args.dataset or list(DEFAULT_DATASETS)
-    files = resolve_dataset_files(
+    files = None if pretokenized is not None else resolve_dataset_files(
         dataset_values,
         args.limit_per_dataset,
         args.seed,
@@ -842,21 +860,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     model = attach_lora(model, args, loader_kind)
 
-    shards = [load_jsonl_shard(path) for path in files]
-    dataset = concatenate_datasets(shards).shuffle(seed=args.seed)
-    print(f"[DATA] {len(dataset):,} conversations from {len(files)} file(s)")
-    dataset = format_dataset(dataset, tokenizer)
-    report_length_stats(dataset, tokenizer, args.max_seq_length)
-    print(f"[DATA] sample:\n{dataset[0]['text'][:400]}\n---")
+    data_collator = None
+    if pretokenized is not None:
+        dataset = pretokenized
+        print(f"[DATA] {len(dataset):,} conversations pre-tokenized in "
+              f"{os.path.basename(os.path.abspath(args.pretokenized_dir))}; "
+              "ranks only memory-map Arrow — no in-rank tokenization")
+        # The collator sft_prepare_dataset installs for pre-labelled splits
+        # (DataCollatorForSeq2Seq); with skip_prepare_dataset nothing else
+        # sets one, so it is pinned here.
+        from transformers import DataCollatorForSeq2Seq
+
+        data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer)
+        print(f"[DATA] sample:\n{tokenizer.decode(dataset[0]['input_ids'])[:400]}\n---")
+    else:
+        shards = [load_jsonl_shard(path) for path in files]
+        dataset = concatenate_datasets(shards).shuffle(seed=args.seed)
+        print(f"[DATA] {len(dataset):,} conversations from {len(files)} file(s)")
+        dataset = format_dataset(dataset, tokenizer)
+        report_length_stats(dataset, tokenizer, args.max_seq_length)
+        print(f"[DATA] sample:\n{dataset[0]['text'][:400]}\n---")
 
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
         args=build_sft_config(args, args.training_output_dir),
+        data_collator=data_collator,
     )
 
-    if not args.no_mask_prompt:
+    if pretokenized is not None:
+        print("Mask: assistant labels were baked offline with Unsloth's own "
+              "masking; there is no per-rank masking pass to run.")
+    elif not args.no_mask_prompt:
         from unsloth.chat_templates import train_on_responses_only
 
         trainer = train_on_responses_only(

@@ -15,6 +15,12 @@ pushes ``last-checkpoint`` to ``--hub-repo`` at every save, resumes from it on
 rerun (asking first), and uploads the finished adapter. Without a token the
 whole thing stays local: checkpoints live in ``training_output/`` only.
 
+Before the launch, the merged mix is pre-tokenized once into
+``training_output/pretokenized`` (``python -m qwen_sft pretokenize``), so the
+DDP ranks only memory-map the result instead of each tokenizing the corpus —
+the concurrent in-rank preparation is what the kernel OOM killer picks off on
+Kaggle's ~29 GB host RAM (rank 0 SIGKILLed mid-tokenize).
+
 With more than one GPU visible (Kaggle: 2x T4) the training command is launched
 under ``torchrun`` so both GPUs train (DDP); gradient accumulation is halved to
 keep the effective batch identical to the single-GPU run. The resume decision
@@ -33,6 +39,7 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATASET_REPO = "ozaa77/Cogito-0.9-qwen-sft-mix"
 DATASET_FILE = "qwen_sft_mix.jsonl"
 DEFAULT_HUB_REPO = "ozaa77/Cogito-0.9-qwen-sft-adapter"
+PRETOKENIZED_DIR = os.path.join(REPO_ROOT, "training_output", "pretokenized")
 # 0 = every row of the mix (101,826). The resume machinery checkpoints mid-run,
 # so multi-session Kaggle training is the normal path, not an exception.
 DEFAULT_MAX_SAMPLES = 0
@@ -73,11 +80,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--no-resume", dest="resume", action="store_false",
                         help="Ignore last-checkpoint, quarantine old checkpoint "
                              "dirs, and train from scratch")
+    parser.add_argument("--no-pretokenize", dest="pretokenize",
+                        action="store_false",
+                        help="Skip the offline pre-tokenization step and let "
+                             "the ranks prepare the dataset themselves (the "
+                             "path that OOM-killed 2-GPU sessions)")
     parser.add_argument("--gpus", type=int, default=0,
                         help="GPUs for DDP training (0 = auto-detect; Kaggle "
                              "2x T4 trains on both, 1 forces single GPU)")
     args = parser.parse_args(argv)
     args.resume = True if args.resume is None else args.resume
+    args.pretokenize = True if args.pretokenize is None else args.pretokenize
     return args
 
 
@@ -151,6 +164,43 @@ def fetch_dataset(args) -> str:
     return subset_path
 
 
+def ensure_pretokenized(args, dataset_path) -> str | None:
+    """Build the Arrow cache the ranks will memory-map, once, in this process.
+
+    Two torchrun ranks tokenizing the same 101,826-row mix concurrently is
+    what SIGKILLed a Kaggle session's rank 0 (host RAM): TRL's preload phases
+    and Unsloth's mask map each hold a full corpus copy per rank. Running the
+    preparation as ONE subprocess here (~15 min CPU, no GPU) and pointing both
+    ranks at its output drops in-training preprocessing to memory-mapped
+    reads. An existing cache whose meta.json still matches (model, sequence
+    length, source files) is reused, so resume sessions skip straight to
+    training. Returns the directory, or None to fall back to the legacy
+    in-rank preparation. A crashed build aborts the run here (its real error
+    is worth more to the session than silently OOMing in the ranks); only a
+    build that completes but fails the meta check falls back.
+    """
+    from qwen_sft.finetune.pretokenize import matches_meta, read_meta
+
+    sources = [(os.path.abspath(dataset_path), os.path.getsize(dataset_path))]
+    if matches_meta(read_meta(PRETOKENIZED_DIR), args.model,
+                    args.max_seq_length, sources):
+        print(f"[DATA] pre-tokenized cache is current: {PRETOKENIZED_DIR}")
+        return PRETOKENIZED_DIR
+    print(f"[DATA] building pre-tokenized cache -> {PRETOKENIZED_DIR} "
+          "(single CPU pass; every rank and resume session reuses it)")
+    run([sys.executable, "-m", "qwen_sft.finetune.pretokenize",
+         "--dataset", dataset_path, "--model", args.model,
+         "--max-seq-length", str(args.max_seq_length),
+         "--output-dir", PRETOKENIZED_DIR],
+        cwd=REPO_ROOT)
+    if matches_meta(read_meta(PRETOKENIZED_DIR), args.model,
+                    args.max_seq_length, sources):
+        return PRETOKENIZED_DIR
+    print("[DATA] pre-tokenization did not produce a matching cache; ranks "
+          "prepare the dataset themselves (the OOM-prone path)")
+    return None
+
+
 def resolve_resume(args, token) -> str | None:
     """Decide where to resume from once, so every DDP rank gets the same answer.
 
@@ -199,6 +249,9 @@ def build_train_cmd(args, dataset_path, token, gpus: int) -> list[str]:
     mode = (f"hub checkpoints on {args.hub_repo}" if args.hub_repo and token
             else "local-only (no HF_TOKEN)")
     print(f"[TRAIN] {mode}")
+    pretokenized = getattr(args, "pretokenized_dir", None)
+    if pretokenized:
+        train_args += ["--pretokenized-dir", pretokenized]
     if gpus > 1:
         print(f"[TRAIN] DDP on {gpus} GPUs: per-rank batch 1 x grad-accum {grad_accum}"
               f" x {gpus} ranks = effective batch {grad_accum * gpus}")
@@ -219,6 +272,10 @@ def main(argv: list[str] | None = None) -> int:
     if gpus > 1:
         print(f"[GPU] {gpus} CUDA GPUs -> torchrun DDP (opt out with --gpus 1)")
     dataset_path = fetch_dataset(args)
+    if args.pretokenize:
+        pretokenized = ensure_pretokenized(args, dataset_path)
+        if pretokenized:
+            args.pretokenized_dir = pretokenized
     run(build_train_cmd(args, dataset_path, token, gpus), cwd=REPO_ROOT)
     print(f"[DONE] adapter: {os.path.join(REPO_ROOT, 'lora_adapter')}")
     return 0
