@@ -171,6 +171,80 @@ def resolve_dataset_files(values, limit, seed, refresh, prepare_dir) -> list[str
     return files
 
 
+def stringify_tool_arguments(messages: list[dict]) -> None:
+    """Coerce every tool-call payload to a JSON string (in place).
+
+    Prepared tool calls keep ``function.arguments`` as a real nested object so
+    chat templates can iterate ``tool_call.arguments | items``, but payload
+    types drift across rows (``arguments.content`` is a string in one record
+    and a nested object elsewhere), which makes type-inference loaders resolve
+    no schema at all: ``Column(.../arguments/content) changed from object to
+    string in row 0``. Stringified payloads give a uniform Arrow column;
+    ``parse_tool_arguments`` restores the objects before rendering.
+    """
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = function.get("arguments")
+            if not isinstance(arguments, str):
+                function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+
+
+def parse_tool_arguments(messages: list[dict]) -> None:
+    """Restore objects from stringified payloads (mirror of stringify_*)."""
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    function["arguments"] = json.loads(arguments)
+                except json.JSONDecodeError:
+                    function["arguments"] = {"value": arguments}
+
+
+def load_jsonl_shard(path: str):
+    """Load one prepared JSONL shard as a dataset, skipping poison lines.
+
+    ``load_dataset("json", data_files=...)`` unifies nested types across rows
+    and dies on records carrying differently-typed tool payloads, and a single
+    malformed line aborts the whole generation (pandas reports ``Trailing
+    data``). Reading line-by-line keeps each record's shape independent, skips
+    unreadable lines, and yields a uniform Arrow schema via
+    ``stringify_tool_arguments``.
+    """
+    from datasets import Dataset
+
+    rows = []
+    skipped = 0
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                messages = json.loads(line)["messages"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                skipped += 1
+                continue
+            if not isinstance(messages, list):
+                skipped += 1
+                continue
+            stringify_tool_arguments(messages)
+            rows.append({"messages": messages})
+    if skipped:
+        print(f"[DATA] {path}: skipped {skipped} unreadable line(s)")
+    if not rows:
+        raise SystemExit(f"[FATAL] {path}: no readable conversations remain.")
+    dataset = Dataset.from_list(rows)
+    print(f"[DATA] {os.path.basename(path)}: {len(dataset):,} conversations")
+    return dataset
+
+
 def format_dataset(dataset, tokenizer):
     """Render each conversation with the model's own chat template."""
 
@@ -178,6 +252,7 @@ def format_dataset(dataset, tokenizer):
         messages = example["messages"]
         if isinstance(messages, str):
             messages = json.loads(messages)
+        parse_tool_arguments(messages)
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -634,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     validate_hub_args(args)
     resume_path = resolve_resume_checkpoint(args)
 
-    from datasets import concatenate_datasets, load_dataset
+    from datasets import concatenate_datasets
     from trl import SFTTrainer
 
     dataset_values = args.dataset or list(DEFAULT_DATASETS)
@@ -652,7 +727,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     model = attach_lora(model, args, loader_kind)
 
-    shards = [load_dataset("json", data_files=path, split="train") for path in files]
+    shards = [load_jsonl_shard(path) for path in files]
     dataset = concatenate_datasets(shards).shuffle(seed=args.seed)
     print(f"[DATA] {len(dataset):,} conversations from {len(files)} file(s)")
     dataset = format_dataset(dataset, tokenizer)
