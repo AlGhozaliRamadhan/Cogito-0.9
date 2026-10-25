@@ -78,6 +78,8 @@ TOTAL                127223   101826    25397        0
 
 101,826 conversations, 1.6 GB, median 1 446 tokens (p90 10 894). `astra_mirror` collapsing to zero is dedupe working, not a failure. `fable` stops at its curated 5k split (the 10k `full` split yields far fewer valid conversations), `fable_code` has only 29 usable sessions, and `medical` is the complete 2,194-row file. This is the 20k-per-source scale; cap `distill_*` with `--max-per-source` if you need a different blend.
 
+Prebuilt copy: [`ozaa77/Cogito-0.9-qwen-sft-mix`](https://huggingface.co/datasets/ozaa77/Cogito-0.9-qwen-sft-mix) on Hugging Face.
+
 ---
 
 ## Kaggle quickstart
