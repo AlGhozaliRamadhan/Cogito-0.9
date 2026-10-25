@@ -627,6 +627,10 @@ def render_loss_chart(args) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_cuda()
+    # Unsloth patches trl/transformers/peft at import time; importing it after
+    # them silently drops the fast kernels (slower, more VRAM). It must load
+    # first — but not at module level, so `--help` stays dependency-free.
+    import unsloth  # noqa: F401
     validate_hub_args(args)
     resume_path = resolve_resume_checkpoint(args)
 
