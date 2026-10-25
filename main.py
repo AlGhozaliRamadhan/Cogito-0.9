@@ -7,12 +7,18 @@ notebook.
 
     python main.py                        # full 101,826-row mix, 2 epochs
     python main.py --max-samples 50000    # half the mix, same 2 passes
+    python main.py --gpus 1               # single T4 instead of both
     python main.py --no-resume            # quarantined checkpoints, start over
 
 Runs are multi-session on Kaggle: with the ``HF_TOKEN`` secret the training run
 pushes ``last-checkpoint`` to ``--hub-repo`` at every save, resumes from it on
 rerun (asking first), and uploads the finished adapter. Without a token the
 whole thing stays local: checkpoints live in ``training_output/`` only.
+
+With more than one GPU visible (Kaggle: 2x T4) the training command is launched
+under ``torchrun`` so both GPUs train (DDP); gradient accumulation is halved to
+keep the effective batch identical to the single-GPU run. The resume decision
+is made once here and passed explicitly to every rank.
 """
 
 import argparse
@@ -33,7 +39,8 @@ DEFAULT_MAX_SAMPLES = 0
 DEFAULT_EPOCHS = 2
 DEFAULT_SAVE_STEPS = 200
 
-from qwen_sft.config import DEFAULT_BASE_MODEL, DEFAULT_MAX_SEQ_LENGTH, MERGED_DIR
+from qwen_sft.config import (DEFAULT_BASE_MODEL, DEFAULT_GRAD_ACCUM,
+                             DEFAULT_MAX_SEQ_LENGTH, MERGED_DIR)
 
 
 def run(cmd, cwd=None):
@@ -66,9 +73,29 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--no-resume", dest="resume", action="store_false",
                         help="Ignore last-checkpoint, quarantine old checkpoint "
                              "dirs, and train from scratch")
+    parser.add_argument("--gpus", type=int, default=0,
+                        help="GPUs for DDP training (0 = auto-detect; Kaggle "
+                             "2x T4 trains on both, 1 forces single GPU)")
     args = parser.parse_args(argv)
     args.resume = True if args.resume is None else args.resume
     return args
+
+
+def detect_gpu_count() -> int:
+    """Count CUDA GPUs without importing torch into this process."""
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", "import torch; print(torch.cuda.device_count())"],
+            check=False, capture_output=True, text=True,
+        )
+        return max(1, int(probe.stdout.strip().splitlines()[-1]))
+    except (ValueError, IndexError):
+        return 1  # no CUDA for whatever reason; the trainer reports it
+    except OSError:
+        # Probe cannot even run (no driver/env): assume one GPU and let the
+        # trainer surface the real problem at load time.
+        print("[GPU] GPU probe failed; falling back to single GPU.")
+        return 1
 
 
 def ensure_hf_token() -> str | None:
@@ -124,28 +151,62 @@ def fetch_dataset(args) -> str:
     return subset_path
 
 
-def build_train_cmd(args, dataset_path, token) -> list[str]:
-    cmd = [
-        sys.executable, "-m", "qwen_sft", "train",
+def resolve_resume(args, token) -> str | None:
+    """Decide where to resume from once, so every DDP rank gets the same answer.
+
+    Delegates to the train module's resolver (it validates checkpoints, prompts,
+    and quarantines stale dirs). Two torchrun ranks cannot share stdin safely,
+    so the decision has to happen before the launch.
+    """
+    from types import SimpleNamespace
+
+    from qwen_sft.finetune.train import resolve_resume_checkpoint
+
+    ns = SimpleNamespace(
+        resume_from_checkpoint=None,
+        fresh=not args.resume,
+        resume_from_hub=bool(args.hub_repo) and bool(token) and args.resume,
+        push_checkpoints=bool(args.hub_repo) and bool(token),
+        training_output_dir=os.path.join(REPO_ROOT, "training_output"),
+        hub_repo=args.hub_repo or "",
+        hub_private=not args.public,
+    )
+    return resolve_resume_checkpoint(ns)
+
+
+def build_train_cmd(args, dataset_path, token, gpus: int) -> list[str]:
+    resolved = resolve_resume(args, token)
+    # Each rank trains its own batch under DDP, so halve accumulation to keep
+    # the effective batch (and the LR schedule) identical to a single-GPU run.
+    grad_accum = max(1, DEFAULT_GRAD_ACCUM // gpus) if gpus > 1 else DEFAULT_GRAD_ACCUM
+    train_args = [
         "--model", args.model,
         "--dataset", dataset_path,
         "--epochs", str(args.epochs),
         "--max-seq-length", str(args.max_seq_length),
         "--save-steps", str(args.save_steps),
+        "--grad-accum", str(grad_accum),
     ]
+    if resolved:
+        train_args += ["--resume-from-checkpoint", resolved]
+        print(f"[TRAIN] resuming from {resolved}")
+    else:
+        train_args += ["--fresh"]
     if args.hub_repo and token:
-        cmd += ["--hub-repo", args.hub_repo]
+        train_args += ["--hub-repo", args.hub_repo]
         if not args.public:
-            cmd.append("--hub-private")
-        if not args.resume:
-            # Explicit fresh intent: also quarantine stale checkpoint dirs, so a
-            # later crash+rerun cannot resume from the previous run's state.
-            cmd += ["--no-resume-from-hub", "--fresh"]
-            print("[TRAIN] --no-resume: old local checkpoints will be quarantined.")
+            train_args.append("--hub-private")
     mode = (f"hub checkpoints on {args.hub_repo}" if args.hub_repo and token
             else "local-only (no HF_TOKEN)")
     print(f"[TRAIN] {mode}")
-    return cmd
+    if gpus > 1:
+        print(f"[TRAIN] DDP on {gpus} GPUs: per-rank batch 1 x grad-accum {grad_accum}"
+              f" x {gpus} ranks = effective batch {grad_accum * gpus}")
+        return [
+            sys.executable, "-m", "torch.distributed.run",
+            f"--nproc_per_node={gpus}", "-m", "qwen_sft", "train",
+        ] + train_args
+    return [sys.executable, "-m", "qwen_sft", "train"] + train_args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,8 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     if not token and args.hub_repo:
         print("[HF] No HF_TOKEN: checkpoints stay local; a crash restarts training.")
     install_stack()
+    gpus = args.gpus if args.gpus > 0 else detect_gpu_count()
+    if gpus > 1:
+        print(f"[GPU] {gpus} CUDA GPUs -> torchrun DDP (opt out with --gpus 1)")
     dataset_path = fetch_dataset(args)
-    run(build_train_cmd(args, dataset_path, token), cwd=REPO_ROOT)
+    run(build_train_cmd(args, dataset_path, token, gpus), cwd=REPO_ROOT)
     print(f"[DONE] adapter: {os.path.join(REPO_ROOT, 'lora_adapter')}")
     return 0
 

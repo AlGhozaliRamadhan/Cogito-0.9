@@ -7,9 +7,9 @@ The old Cogito extras (abliteration, synthetic data, TTS, upload scripts) are go
 
 ## Run on Kaggle — one cell
 
-One-time setup: **Settings → Accelerator: GPU T4 ×2** (the run uses one T4), **Internet: on**, and secret `HF_TOKEN` (**Add-ons → Secrets**, a write token from huggingface.co/settings/tokens). No token = trains local-only and a crash restarts from zero.
+One-time setup: **Settings → Accelerator: GPU T4 ×2** (both are used — training launches under `torchrun` DDP automatically), **Internet: on**, and secret `HF_TOKEN` (**Add-ons → Secrets**, a write token from huggingface.co/settings/tokens). No token = trains local-only and a crash restarts from zero.
 
-Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the full 101,826-conversation mix, trains **2 epochs**, checkpoints to the Hub every 200 steps, resumes automatically on rerun, and uploads the finished adapter.
+Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the full 101,826-conversation mix, trains **2 epochs on both T4s**, checkpoints to the Hub every 200 steps, resumes automatically on rerun, and uploads the finished adapter.
 
 ```python
 # Cogito 0.9 — one-cell Kaggle SFT run (bootstrap -> main.py)
@@ -32,13 +32,14 @@ else:
 run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 ```
 
-**Time reality check:** full mix × 2 epochs ≈ 60–90 h on one T4 = several Kaggle sessions. That is fine: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one). `--no-resume` starts over.
+**Time reality check:** full mix × 2 epochs ≈ 35–55 h with both T4s (≈ 60–90 h on a single one) — several Kaggle sessions either way. That is fine: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and every DDP rank gets the identical decision). `--no-resume` starts over.
 
 | Want | Flag (all `main.py` flags) |
 | --- | --- |
-| ~3 sessions instead of ~8 | `--max-samples 50000` |
-| one long session instead of multi-session (12–18 h) | `--max-samples 20000` |
+| ~3 sessions instead of ~5 | `--max-samples 50000` |
+| short single-session run (~6–9 h on 2×T4) | `--max-samples 20000` |
 | 1 epoch | `--epochs 1` |
+| force single-GPU (if DDP ever misbehaves) | `--gpus 1` |
 | OOM at 4096 | `--max-seq-length 2048` |
 | fresh start (old checkpoint dirs quarantined) | `--no-resume` |
 | push somewhere else | `--hub-repo you/repo` (default `ozaa77/Cogito-0.9-qwen-sft-adapter`, private) |

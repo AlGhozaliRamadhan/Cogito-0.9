@@ -230,3 +230,32 @@ def test_non_interactive_stdin_continues(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", raising_input)
     assert resolve_resume_checkpoint(_args(tmp_path)) == path
+
+
+# ---------------------------------------------------------------- multi-rank
+
+
+def test_multi_rank_without_explicit_decision_is_refused(tmp_path, monkeypatch):
+    """Two torchrun ranks cannot share stdin: no flag -> refuse to start."""
+    make_checkpoint(tmp_path, 100)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    with pytest.raises(SystemExit) as exit_info:
+        resolve_resume_checkpoint(_args(tmp_path))
+    assert "torchrun" in str(exit_info.value)
+
+
+def test_multi_rank_explicit_resume_passes(tmp_path, monkeypatch):
+    path = make_checkpoint(tmp_path, 100)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    assert resolve_resume_checkpoint(_args(tmp_path, resume_from_checkpoint=path)) == path
+
+
+def test_multi_rank_fresh_passes_without_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    make_checkpoint(tmp_path, 100)
+    monkeypatch.setenv("LOCAL_RANK", "1")  # rank 1 must not quarantine in parallel
+    assert resolve_resume_checkpoint(_args(tmp_path, fresh=True)) is None
+    assert glob_prefix(tmp_path, "checkpoint-")  # left for rank 0, which quarantines
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    assert resolve_resume_checkpoint(_args(tmp_path, fresh=True)) is None
+    assert glob_prefix(tmp_path, "stale-checkpoint-")

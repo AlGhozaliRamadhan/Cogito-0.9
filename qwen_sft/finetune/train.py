@@ -290,6 +290,13 @@ def validate_hub_args(args) -> None:
         )
 
 
+def _world_size() -> int:
+    try:
+        return max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    except ValueError:
+        return 1
+
+
 def resolve_resume_checkpoint(args) -> str | None:
     """Resume path: explicit flag > prompt on local checkpoint > prompt on Hub.
 
@@ -307,10 +314,21 @@ def resolve_resume_checkpoint(args) -> str | None:
             )
         return args.resume_from_checkpoint
     if getattr(args, "fresh", False):
-        moved = _quarantine_local_checkpoints(args.training_output_dir)
-        print(f"[HF] --fresh: quarantined {len(moved)} old checkpoint dir(s) as "
-              "stale-checkpoint-*; training starts from step 0.")
+        if _world_size() <= 1 or os.environ.get("LOCAL_RANK", "0") == "0":
+            moved = _quarantine_local_checkpoints(args.training_output_dir)
+            print(f"[HF] --fresh: quarantined {len(moved)} old checkpoint dir(s) as "
+                  "stale-checkpoint-*; training starts from step 0.")
         return None
+    if _world_size() > 1:
+        # A prompted/auto resume under torchrun would have to reach the same
+        # decision (same checkpoint dir) in every rank; two ranks cannot share
+        # stdin, so without an explicit flag a >1-rank launch refuses to start
+        # rather than risking one rank resuming while another goes fresh.
+        raise SystemExit(
+            "[FATAL] Multi-rank launch (torchrun, WORLD_SIZE>1) needs an explicit "
+            "resume decision so every rank agrees: pass --resume-from-checkpoint "
+            "<dir> or --fresh. main.py resolves this for you before the launch."
+        )
     if not args.resume_from_hub:
         return None
 
