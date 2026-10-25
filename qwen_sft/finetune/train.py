@@ -78,7 +78,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hub-repo", default=None, help="Repo id to push the adapter to")
     parser.add_argument("--push-to-hub", action="store_true",
                         help="Push the adapter after training (needs HF_TOKEN and --hub-repo)")
-    return parser.parse_args(argv)
+    parser.add_argument("--push-checkpoints", action=argparse.BooleanOptionalAction, default=None,
+                        help="Push the latest checkpoint to --hub-repo at every save. "
+                             "Default: on whenever --hub-repo is set and a token is available "
+                             "(only last-checkpoint is kept on the Hub).")
+    parser.add_argument("--resume-from-hub", action=argparse.BooleanOptionalAction, default=None,
+                        help="Resume from last-checkpoint in --hub-repo when it exists. "
+                             "Default: on whenever checkpoint pushing is enabled.")
+    parser.add_argument("--hub-private", action="store_true",
+                        help="Create the Hub repo as private")
+    parser.add_argument("--save-total-limit", type=int, default=2,
+                        help="How many checkpoints to keep on disk")
+    args = parser.parse_args(argv)
+
+    # Automatic mode: --hub-repo is all it takes. Opt out per feature with
+    # --no-push-checkpoints / --no-resume-from-hub.
+    args.push_checkpoints = bool(args.hub_repo) if args.push_checkpoints is None \
+        else args.push_checkpoints
+    args.resume_from_hub = args.push_checkpoints if args.resume_from_hub is None \
+        else args.resume_from_hub
+    return args
 
 
 def require_cuda() -> None:
@@ -249,10 +268,110 @@ def attach_lora(model, args, loader_kind):
     return model
 
 
+def validate_hub_args(args) -> None:
+    """Fail before loading the model if the Hub options cannot work."""
+    if not (args.push_checkpoints or args.resume_from_hub):
+        return
+    if not args.hub_repo:
+        raise SystemExit("[FATAL] --push-checkpoints/--resume-from-hub need --hub-repo.")
+    if not args.push_checkpoints:
+        return
+
+    from huggingface_hub import get_token
+
+    if not get_token():
+        raise SystemExit(
+            "[FATAL] --push-checkpoints needs a Hugging Face token. Set HF_TOKEN "
+            "(Kaggle secret) or run `hf auth login`."
+        )
+
+
+def resolve_resume_checkpoint(args) -> str | None:
+    """Resume path: explicit flag > prompt on local checkpoint > prompt on Hub.
+
+    Falls back to 'continue' when stdin is not interactive (batch reruns), so a
+    crashed Kaggle session still picks up where it left off.
+    """
+    if args.resume_from_checkpoint:
+        return args.resume_from_checkpoint
+    if not args.resume_from_hub:
+        return None
+
+    local = _latest_local_checkpoint(args.training_output_dir)
+    if local:
+        if _ask_continue(local, "Local training_output"):
+            return local
+        print("[HF] Starting a fresh run; the first save replaces last-checkpoint.")
+        return None
+    # No local candidate: fetch last-checkpoint from the Hub if it exists.
+
+    import shutil
+
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+
+    hub_dir = os.path.join(args.training_output_dir, "hub_resume")
+    # Always download clean: snapshot_download keeps stale files otherwise.
+    if os.path.isdir(hub_dir):
+        shutil.rmtree(hub_dir)
+    try:
+        snapshot_download(
+            repo_id=args.hub_repo,
+            local_dir=hub_dir,
+            allow_patterns=["last-checkpoint/*"],
+        )
+    except (RepositoryNotFoundError, EntryNotFoundError) as exc:
+        print(f"[HF] No Hub checkpoint ({type(exc).__name__}); starting fresh.")
+        return None
+
+    path = os.path.join(hub_dir, "last-checkpoint")
+    if not os.path.isdir(path):
+        print("[HF] No last-checkpoint on the Hub; starting fresh.")
+        return None
+    if _ask_continue(path, "Hub last-checkpoint"):
+        return path
+    print("[HF] Starting a fresh run; the first save replaces last-checkpoint.")
+    return None
+
+
+def _checkpoint_step(path) -> int | None:
+    try:
+        with open(os.path.join(path, "trainer_state.json"), encoding="utf-8") as fh:
+            step = json.load(fh).get("global_step")
+        return int(step) if step else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _ask_continue(path, source) -> bool:
+    step = _checkpoint_step(path)
+    shown = f" (step {step:,})" if step else ""
+    print(f"[HF] {source} checkpoint found{shown}: {path}")
+    try:
+        answer = input("    Continue this run? [Enter = yes, n = start fresh] ")
+    except (EOFError, OSError):
+        print("    No interactive input available; continuing from the checkpoint.")
+        return True
+    return answer.strip().lower() not in ("n", "no")
+
+
+def _latest_local_checkpoint(training_output_dir):
+    """Newest checkpoint-* under training_output_dir, or None."""
+    def step_of(path):
+        try:
+            return int(os.path.basename(path).rsplit("-", 1)[-1])
+        except ValueError:
+            return -1
+
+    dirs = glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
+    return max(dirs, key=step_of) if dirs else None
+
+
 def build_sft_config(args, training_output_dir):
     import torch
     from trl import SFTConfig
 
+    push_checkpoints = bool(args.push_checkpoints and args.hub_repo)
     kwargs = dict(
         output_dir=training_output_dir,
         per_device_train_batch_size=args.batch_size,
@@ -271,11 +390,15 @@ def build_sft_config(args, training_output_dir):
         report_to="none",
         save_strategy="steps",
         save_steps=args.save_steps,
-        save_total_limit=2,
+        save_total_limit=args.save_total_limit,
         seed=args.seed,
         dataloader_pin_memory=True,
         ddp_find_unused_parameters=False,
-        push_to_hub=False,
+        push_to_hub=push_checkpoints,
+        hub_model_id=args.hub_repo if push_checkpoints else None,
+        # "checkpoint" pushes at every save and keeps only last-checkpoint on the Hub.
+        hub_strategy="checkpoint" if push_checkpoints else "end",
+        hub_private_repo=bool(args.hub_private) if push_checkpoints else None,
         dataset_text_field="text",
         packing=False,
         dataset_num_proc=1,
@@ -289,6 +412,8 @@ def build_sft_config(args, training_output_dir):
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_cuda()
+    validate_hub_args(args)
+    resume_path = resolve_resume_checkpoint(args)
 
     from datasets import concatenate_datasets, load_dataset
     from trl import SFTTrainer
@@ -332,24 +457,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("[MASK] Loss is computed on assistant turns only.")
 
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=resume_path)
 
     output_dir = os.path.abspath(args.output_dir)
     print(f"[SAVE] adapter -> {output_dir}")
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
-    if args.push_to_hub:
-        token = os.environ.get("HF_TOKEN")
+    if args.push_to_hub or args.push_checkpoints:
+        from huggingface_hub import get_token
+
+        token = get_token()
         if not token:
-            print("[HF] HF_TOKEN is not set; skipping push.")
-            return 0
-        if not args.hub_repo:
+            print("[HF] No Hugging Face token; skipping adapter push.")
+        elif not args.hub_repo:
             print("[HF] --push-to-hub needs --hub-repo; skipping push.")
-            return 0
-        model.push_to_hub(args.hub_repo, token=token)
-        tokenizer.push_to_hub(args.hub_repo, token=token)
-        print(f"[HF] adapter pushed to https://huggingface.co/{args.hub_repo}")
+        else:
+            model.push_to_hub(args.hub_repo, token=token)
+            tokenizer.push_to_hub(args.hub_repo, token=token)
+            print(f"[HF] adapter pushed to https://huggingface.co/{args.hub_repo}")
 
     print("[DONE] Adapter ready. Merge it into the base with "
           "`python -m qwen_sft.finetune.merge --adapter <dir>`.")

@@ -84,28 +84,90 @@ Prebuilt copy: [`ozaa77/Cogito-0.9-qwen-sft-mix`](https://huggingface.co/dataset
 
 ## Kaggle quickstart
 
-Notebook settings: **GPU T4 ×2**, Internet **on**, attach your `HF_TOKEN` as a Kaggle secret only if you plan to push.
+Zero-config: the only manual step is one-time notebook setup Kaggle does not let a
+cell change for itself — **Settings → Accelerator: GPU T4 ×2**, **Internet: on**.
+Then Run this cell; nothing needs editing. All logic lives in [`main.py`](main.py)
+in the repo (install, dataset download + slice, checkpoint handling), and the cell
+just bootstraps: clone or pull `main`, then execute `main.py`.
 
 ```python
-!git clone https://github.com/<you>/<repo>.git
-%cd <repo>
-!pip install -q -r requirements.txt
-!pip install -q "unsloth[kaggle-new]==2026.8.8"
+# Cogito 0.9 — one-cell Kaggle SFT run (bootstrap -> main.py)
+import os
+import subprocess
+import sys
 
-# 1. Prepare every SFT source and merge them (dedupe included)
-!python -m qwen_sft.datasets.merge --all-sft --limit 20000
+REPO_URL = "https://github.com/AlGhozaliRamadhan/Cogito-0.9.git"
+REPO_DIR = "/kaggle/working/Cogito-0.9" if os.path.isdir("/kaggle/working") else os.path.abspath("Cogito-0.9")
 
-# 2. Train one epoch on the merged file
-!python -m qwen_sft train \
-    --dataset data/merged/qwen_sft_mix.jsonl \
-    --epochs 1 --max-seq-length 4096
+
+def run(cmd, cwd=None):
+    print("$", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True, cwd=cwd)
+
+
+if os.path.isdir(os.path.join(REPO_DIR, ".git")):
+    run(["git", "-C", REPO_DIR, "pull", "--ff-only"])
+else:
+    run(["git", "clone", REPO_URL, REPO_DIR])
+
+# Defaults: 20k-row slice, 1 epoch, seq 4096, save every 200 steps.
+run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 ```
 
-The adapter lands in `lora_adapter/`, checkpoints in `training_output/`. Both are small (well under the 20 GB working quota), unlike a merged model.
+Every knob is a `main.py` flag; rerun the cell after editing the last `run(...)`:
+
+```python
+run([sys.executable, os.path.join(REPO_DIR, "main.py"),
+     "--max-samples", "10000", "--epochs", "2"])             # two passes, half the data
+run([sys.executable, os.path.join(REPO_DIR, "main.py"), "--no-resume"])   # fresh start
+run([sys.executable, os.path.join(REPO_DIR, "main.py"), "--max-samples", "0"])  # all 101,826
+```
+
+`main.py` flags: `--max-samples` (0 = full file), `--epochs`, `--max-seq-length`,
+`--save-steps`, `--no-resume`, `--hub-repo`, `--public` (default private), `--model`,
+`--dataset-repo/--dataset-file`.
+
+Optional, still zero-edit: add `HF_TOKEN` under **Add-ons → Secrets** and the run
+gains automatic Hub checkpoints, crash-resume, and the finished-adapter upload
+(pushing to `ozaa77/Cogito-0.9-qwen-sft-adapter` by default — point `--hub-repo`
+anywhere you like). Without a token it trains locally only.
+
+The adapter lands in `Cogito-0.9/lora_adapter/`, checkpoints in
+`Cogito-0.9/training_output/`. Both are small (well under the 20 GB working quota),
+unlike a merged model. Each checkpoint carries the adapter plus optimizer and
+scheduler state (~0.4 GB), so a resume picks up mid-epoch, not just mid-file.
+Keep `2` on disk with `--save-total-limit` if you need more.
+
+**Checkpoints and resume.** With `HF_TOKEN` set, `--hub-repo` is all it takes — the
+training script automatically:
+
+- saves a checkpoint every `--save-steps` (default 200) steps and pushes it to the
+  adapter repo (`--hub-repo`, default `ozaa77/Cogito-0.9-qwen-sft-adapter`, private)
+  as `last-checkpoint` (only the latest is kept remotely),
+- on rerun, if a checkpoint exists (local or on the Hub, showing its step), asks
+  whether to **continue that run or start fresh** — answer in the input box; a batch
+  run with no stdin continues automatically,
+- uploads the finished adapter to the same repo once training ends.
+
+Opt-outs: `--no-resume` always starts fresh, `--no-push-checkpoints` keeps
+everything local. A fresh start overwrites `last-checkpoint` at the first save;
+until then the remote copy belongs to the previous run.
+
+**One or two epochs?** One epoch over 20k is the right first run (cosine schedule,
+warmup, 2e-4 LR): most SFT gains land in the first pass, a second full pass on the
+same data mostly buys memorization, and 4096-token T4 throughput makes 20k × 2
+epochs roughly 12-18 h — over Kaggle's 12 h session limit. If the first adapter
+still feels underfit, the cheap upgrade is `--epochs 2 --max-samples 10000`
+(same wall-clock as 20k × 1). Because checkpoints resume mid-run, even a session
+that dies at hour 11 costs you nothing but a rerun.
+
+Set `--max-samples 0` to train on all 101,826 conversations (multi-session; the
+resume prompt handles it).
 
 Optional — publish the adapter, then merge it into a standalone model without writing 8 GB to `/kaggle/working`:
 
 ```python
+%cd /kaggle/working/Cogito-0.9
 !python -m qwen_sft train --dataset openthoughts --epochs 1 \
     --hub-repo <you>/qwen35-4b-sft --push-to-hub
 
