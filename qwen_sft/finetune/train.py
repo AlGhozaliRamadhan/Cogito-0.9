@@ -340,6 +340,36 @@ def report_length_stats(dataset, tokenizer, max_seq_length, sample: int = 200) -
         )
 
 
+def normalize_to_text_tokenizer(tokenizer, model_name):
+    """Return a plain text tokenizer for text-only SFT.
+
+    VL checkpoints surface a processor in BOTH loader paths — and its
+    ``__call__`` routes text into the image/video pipeline: keyword calls
+    crawl (unsloth measured ~30 rows/s on 15 KB transcripts here, i.e. an
+    hour of TRL pre-tokenization per rank) and positional calls raise
+    ("Incorrect image source..."). Anything exposing an ``image_processor``
+    gets replaced by ``AutoTokenizer`` from the same checkpoint, keeping the
+    processor only as a chat-template source.
+    """
+    if not hasattr(tokenizer, "image_processor"):
+        return tokenizer
+
+    template = getattr(tokenizer, "chat_template", None)
+    try:
+        from transformers import AutoTokenizer
+
+        text_tokenizer = AutoTokenizer.from_pretrained(model_name)
+    except Exception as exc:
+        print(f"[LOAD] AutoTokenizer unavailable ({type(exc).__name__}: "
+              f"{str(exc).splitlines()[0][:120]}); using the returned object as-is")
+        return tokenizer
+    if getattr(text_tokenizer, "chat_template", None) is None and template:
+        text_tokenizer.chat_template = template
+    print(f"[LOAD] {model_name} is VL; swapped processor -> AutoTokenizer "
+          "(text-only SFT)")
+    return text_tokenizer
+
+
 def load_base(model_name, max_seq_length, load_in_4bit):
     """Load via Unsloth, falling back to the vision loader for VL checkpoints."""
     from unsloth import FastLanguageModel
@@ -351,12 +381,11 @@ def load_base(model_name, max_seq_length, load_in_4bit):
             dtype=None,
             load_in_4bit=load_in_4bit,
         )
-        return model, tokenizer, "language"
+        return model, normalize_to_text_tokenizer(tokenizer, model_name), "language"
     except Exception as exc:
         print(f"[LOAD] FastLanguageModel failed ({type(exc).__name__}: {exc})")
         print("[LOAD] Retrying with FastVisionModel (text-only LoRA)...")
         from unsloth import FastVisionModel
-        from transformers import AutoTokenizer
 
         model, processor = FastVisionModel.from_pretrained(
             model_name=model_name,
@@ -364,17 +393,7 @@ def load_base(model_name, max_seq_length, load_in_4bit):
             dtype=None,
             load_in_4bit=load_in_4bit,
         )
-        # Text-only SFT needs a plain tokenizer: the processor's own __call__
-        # routes text into the image processor and dies on rendered
-        # transcripts ("cannot identify image file <_io.BytesIO..."). The
-        # processor may not even expose a nested `.tokenizer`, so build the
-        # text tokenizer from the checkpoint directly and keep the processor
-        # only as a chat-template source.
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        if getattr(tokenizer, "chat_template", None) is None:
-            tokenizer.chat_template = getattr(processor, "chat_template", None)
-        print("[LOAD] text tokenizer from AutoTokenizer (train text-only)")
-        return model, tokenizer, "vision"
+        return model, normalize_to_text_tokenizer(processor, model_name), "vision"
 
 
 def attach_lora(model, args, loader_kind):

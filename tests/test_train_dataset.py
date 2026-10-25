@@ -155,3 +155,66 @@ def test_report_length_stats_survives_a_broken_tokenizer():
     dataset = Dataset.from_list([{"text": "anything"}] * 3)
     report_length_stats(dataset, FakeTokenizer(raise_on_call=True),
                         max_seq_length=4096)  # prints skip + returns
+
+
+class FakeProcessor:
+    """VL processor shape: image pipeline + template, no usable __call__."""
+
+    image_processor = object()
+
+    def __init__(self, template):
+        self.chat_template = template
+
+
+class FakePlainTokenizer:
+    """Real text tokenizer shape: no image pipeline."""
+
+    def __init__(self):
+        self.chat_template = None
+
+
+def test_normalize_swaps_a_processor_for_a_text_tokenizer(monkeypatch):
+    from qwen_sft.finetune.train import normalize_to_text_tokenizer
+
+    swapped = FakePlainTokenizer()
+
+    def fake_from_pretrained(model_name, **kwargs):
+        assert model_name == "fake/checkpoint"
+        return swapped
+
+    import transformers
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained",
+                        fake_from_pretrained)
+
+    processor = FakeProcessor("TEXT TEMPLATE")
+    result = normalize_to_text_tokenizer(processor, "fake/checkpoint")
+    assert result is swapped
+    assert swapped.chat_template == "TEXT TEMPLATE"
+
+
+def test_normalize_keeps_a_plain_text_tokenizer(monkeypatch):
+    from qwen_sft.finetune.train import normalize_to_text_tokenizer
+
+    plain = FakePlainTokenizer()
+    plain.chat_template = "ALREADY HAS TEMPLATE"
+
+    def explode(*args, **kwargs):
+        raise AssertionError("AutoTokenizer must not be touched for a plain tokenizer")
+
+    import transformers
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", explode)
+    assert normalize_to_text_tokenizer(plain, "fake/checkpoint") is plain
+
+
+def test_normalize_falls_back_when_autotokenizer_fails(monkeypatch):
+    from qwen_sft.finetune.train import normalize_to_text_tokenizer
+
+    def raise_from_pretrained(*args, **kwargs):
+        raise OSError("network down")
+
+    import transformers
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained",
+                        raise_from_pretrained)
+
+    processor = FakeProcessor(None)
+    assert normalize_to_text_tokenizer(processor, "fake/checkpoint") is processor
