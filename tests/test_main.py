@@ -20,14 +20,16 @@ def test_main_help_runs_without_dependencies():
         assert flag in result.stdout
 
 
-def test_main_defaults_pin_t4_sized_run():
-    """Help output must reflect the T4 defaults so regressions are visible."""
+def test_main_defaults_pin_full_mix_two_epoch_run():
+    """Help output must reflect the runner defaults so regressions are visible."""
     result = subprocess.run(
         [sys.executable, str(MAIN), "--help"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert "20000" in result.stdout      # max-samples row slice
-    assert "4096" in result.stdout       # max-seq-length
-    assert "200" in result.stdout        # save-steps
+    assert result.returncode == 0, result.stderr
+    assert "(default: 0)" in result.stdout    # max-samples: full 101,826 mix
+    assert "(default: 2)" in result.stdout    # epochs: 2 passes
+    assert "4096" in result.stdout            # max-seq-length
+    assert "(default: 200)" in result.stdout  # save-steps

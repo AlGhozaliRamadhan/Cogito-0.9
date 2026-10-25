@@ -1,15 +1,15 @@
 """One-shot runner for the Kaggle README cell.
 
 The notebook cell only bootstraps (clone or pull this repo) and calls this
-script; everything else — dependency install, dataset download + slice,
-checkpoint-safe training — lives here so it is versioned in git instead of
-pasted into a notebook.
+script; everything else — dependency install, dataset download, checkpoint-safe
+training — lives here so it is versioned in git instead of pasted into a
+notebook.
 
-    python main.py                          # 20k slice, 1 epoch, full pipeline
-    python main.py --max-samples 10000 --epochs 2
-    python main.py --no-resume              # ignore last-checkpoint, start fresh
+    python main.py                        # full 101,826-row mix, 2 epochs
+    python main.py --max-samples 50000    # half the mix, same 2 passes
+    python main.py --no-resume            # quarantined checkpoints, start over
 
-With the Kaggle secret ``HF_TOKEN`` present the training run automatically
+Runs are multi-session on Kaggle: with the ``HF_TOKEN`` secret the training run
 pushes ``last-checkpoint`` to ``--hub-repo`` at every save, resumes from it on
 rerun (asking first), and uploads the finished adapter. Without a token the
 whole thing stays local: checkpoints live in ``training_output/`` only.
@@ -27,11 +27,13 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATASET_REPO = "ozaa77/Cogito-0.9-qwen-sft-mix"
 DATASET_FILE = "qwen_sft_mix.jsonl"
 DEFAULT_HUB_REPO = "ozaa77/Cogito-0.9-qwen-sft-adapter"
-DEFAULT_MAX_SAMPLES = 20000
+# 0 = every row of the mix (101,826). The resume machinery checkpoints mid-run,
+# so multi-session Kaggle training is the normal path, not an exception.
+DEFAULT_MAX_SAMPLES = 0
+DEFAULT_EPOCHS = 2
 DEFAULT_SAVE_STEPS = 200
 
-from qwen_sft.config import (DEFAULT_BASE_MODEL, DEFAULT_EPOCHS,
-                             DEFAULT_MAX_SEQ_LENGTH, MERGED_DIR)
+from qwen_sft.config import DEFAULT_BASE_MODEL, DEFAULT_MAX_SEQ_LENGTH, MERGED_DIR
 
 
 def run(cmd, cwd=None):
@@ -53,11 +55,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--public", action="store_true",
                         help="Create the adapter repo as public (default private)")
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES,
-                        help="Row slice for the first run (0 = all rows)")
+                        help="Rows of the mix for this run (0 = all 101,826; "
+                             "resume makes long runs multi-session)")
     parser.add_argument("--max-seq-length", type=int, default=DEFAULT_MAX_SEQ_LENGTH,
                         help="Context window; drop to 2048 only on OOM")
     parser.add_argument("--epochs", type=float, default=DEFAULT_EPOCHS,
-                        help="Full passes over the slice")
+                        help="Full passes over the data")
     parser.add_argument("--save-steps", type=int, default=DEFAULT_SAVE_STEPS,
                         help="Steps between checkpoint saves/pushes")
     parser.add_argument("--no-resume", dest="resume", action="store_false",
