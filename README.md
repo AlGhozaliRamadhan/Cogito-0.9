@@ -9,7 +9,7 @@ The old Cogito extras (abliteration, synthetic data, TTS, upload scripts) are go
 
 One-time setup: **Settings → Accelerator: GPU T4 ×2** (both are used — training launches under `torchrun` DDP automatically), **Internet: on**, and secret `HF_TOKEN` (**Add-ons → Secrets**, a write token from huggingface.co/settings/tokens). No token = trains local-only and a crash restarts from zero.
 
-Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the full 101,826-conversation mix, trains **2 epochs on both T4s**, checkpoints to the Hub every 200 steps, resumes automatically on rerun, and uploads the finished adapter.
+Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the mix, trains the default **20,000-row slice × 1 epoch on both T4s** (≈ 28 GPU-h — one weekly quota), checkpoints to the Hub every 100 steps, resumes automatically on rerun, and uploads the finished adapter.
 
 ```python
 # Cogito 0.9 — one-cell Kaggle SFT run (bootstrap -> main.py)
@@ -32,13 +32,13 @@ else:
 run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 ```
 
-**Time reality check:** full mix × 2 epochs ≈ 35–55 h with both T4s (≈ 60–90 h on a single one) — several Kaggle sessions either way. That is fine: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and every DDP rank gets the identical decision). `--no-resume` starts over.
+**Time reality check (measured on 2×T4):** ~80 s/step at effective batch 16 → the default run, 20,000 rows × 1 epoch = 1,250 steps ≈ **28 h of GPU time**: one weekly 30-h quota, spread over 2–3 sessions. The full mix × 2 epochs measured ≈ **283 h ≈ 9–10 weekly quotas** — only via `--max-samples 0 --epochs 2`, and only if a multi-week run is acceptable. Either way: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and a checkpoint saved under a different epoch plan is never resumed). `--no-resume` starts over.
 
 | Want | Flag (all `main.py` flags) |
 | --- | --- |
-| ~3 sessions instead of ~5 | `--max-samples 50000` |
-| short single-session run (~6–9 h on 2×T4) | `--max-samples 20000` |
-| 1 epoch | `--epochs 1` |
+| bigger mix, ~2 weekly quotas (~56 h) | `--max-samples 40000` |
+| full 101,826-row mix, 1 epoch (~142 h ≈ 5 weekly quotas) | `--max-samples 0` |
+| second epoch (doubles the GPU bill) | `--epochs 2` |
 | force single-GPU (if DDP ever misbehaves) | `--gpus 1` |
 | OOM at 4096 | `--max-seq-length 2048` |
 | fresh start (old checkpoint dirs quarantined) | `--no-resume` |
@@ -116,7 +116,7 @@ Everything is also addressable as a module: `python -m qwen_sft.finetune.train`,
 | Flag | Default (direct CLI) | Why |
 | --- | --- | --- |
 | `--max-seq-length` | `4096` | 46% of samples exceed 2048, 31% exceed 4096; truncation cuts the answer you want it to imitate. Drop to 2048 only on OOM. |
-| `--epochs` | `1` (the Kaggle cell passes **2**) | >2 epochs on this mix memorizes format and degrades chat. |
+| `--epochs` | `1` | >2 epochs on this mix memorizes format and degrades chat. |
 | `--lora-r` / `--lora-alpha` | `16` / `32` | Raise to 32/64 only if loss plateaus early. |
 | `--lr` | `2e-4` | Lower to `1e-4` if it starts parroting one dataset's style. |
 | `--limit-per-dataset` | `20000` | Caps the mix; `am` at full size drowns everything else. |

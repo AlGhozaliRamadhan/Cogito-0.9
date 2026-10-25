@@ -464,6 +464,10 @@ def resolve_resume_checkpoint(args) -> str | None:
     Falls back to 'continue' when stdin is not interactive (batch reruns), so a
     crashed Kaggle session still picks up where it left off. Every candidate is
     validated first; a torn newest checkpoint resumes from the previous one.
+    Checkpoints recorded under a different epoch plan (num_train_epochs in
+    trainer_state.json) are never resumed — a cosine schedule and data offset
+    built for another run shape would corrupt this one: local ones are
+    quarantined, a Hub one is skipped in favor of a fresh start.
     """
     if args.resume_from_checkpoint:
         problem = _checkpoint_problem(args.resume_from_checkpoint)
@@ -490,6 +494,11 @@ def resolve_resume_checkpoint(args) -> str | None:
             "resume decision so every rank agrees: pass --resume-from-checkpoint "
             "<dir> or --fresh. main.py resolves this for you before the launch."
         )
+    # Auto-resume sanity: a checkpoint written for a different epoch plan can
+    # never be a valid resume source for this run (see the helper's docstring).
+    planned_epochs = getattr(args, "epochs", None)
+    if planned_epochs is not None:
+        _quarantine_schedule_mismatch(args.training_output_dir, planned_epochs)
     if not args.resume_from_hub:
         return None
 
@@ -544,6 +553,13 @@ def resolve_resume_checkpoint(args) -> str | None:
     if problem:
         print(f"[HF] Hub last-checkpoint is unusable ({problem}); starting fresh.")
         return None
+    recorded = _checkpoint_epochs(path)
+    if planned_epochs is not None and recorded is not None and recorded != planned_epochs:
+        print(f"[HF] Hub last-checkpoint was saved under num_train_epochs="
+              f"{recorded:g}, but this run plans {planned_epochs:g} — its LR "
+              "schedule and data position belong to a different run shape; "
+              "starting fresh.")
+        return None
     if _ask_continue(path, "Hub last-checkpoint"):
         return path
     print("[HF] Starting a fresh run; the first save replaces last-checkpoint.")
@@ -555,6 +571,16 @@ def _checkpoint_step(path) -> int | None:
         with open(os.path.join(path, "trainer_state.json"), encoding="utf-8") as fh:
             step = json.load(fh).get("global_step")
         return int(step) if step else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _checkpoint_epochs(path) -> float | None:
+    """The epoch plan of the run that wrote this checkpoint."""
+    try:
+        with open(os.path.join(path, "trainer_state.json"), encoding="utf-8") as fh:
+            value = json.load(fh).get("num_train_epochs")
+        return float(value) if value is not None else None
     except (OSError, TypeError, ValueError):
         return None
 
@@ -649,6 +675,35 @@ def _quarantine_local_checkpoints(training_output_dir) -> list[str]:
             moved.append(target)
         except OSError as exc:
             print(f"[HF] could not quarantine {path}: {exc}")
+    return moved
+
+
+def _quarantine_schedule_mismatch(training_output_dir, planned_epochs) -> list[str]:
+    """Move checkpoint-* dirs written under a different epoch plan.
+
+    A checkpoint's cosine schedule, warmup span, and data position only fit the
+    run shape that wrote them: resuming a 2-epoch/full-mix state into a
+    1-epoch/subset run climbs a dead LR schedule at the wrong data offset (and
+    a step-600 dir from the old plan collides with a future step-600 save of
+    the new one). Renaming to ``stale-checkpoint-N`` keeps the weights
+    inspectable while keeping them out of the resume pick, same as the
+    declined-resume path.
+    """
+    moved = []
+    for path in sorted(glob.glob(os.path.join(training_output_dir, "checkpoint-*"))):
+        recorded = _checkpoint_epochs(path)
+        if recorded is None or recorded == planned_epochs:
+            continue
+        target = os.path.join(training_output_dir, "stale-" + os.path.basename(path))
+        try:
+            os.rename(path, target)
+            moved.append(target)
+        except OSError as exc:
+            print(f"[HF] could not quarantine {path}: {exc}")
+    if moved:
+        print(f"[HF] quarantined {len(moved)} checkpoint dir(s) written under a "
+              f"different epoch plan (num_train_epochs != {planned_epochs:g}); "
+              "their LR schedule does not fit this run.")
     return moved
 
 

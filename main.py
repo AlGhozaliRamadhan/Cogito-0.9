@@ -5,8 +5,8 @@ script; everything else — dependency install, dataset download, checkpoint-saf
 training — lives here so it is versioned in git instead of pasted into a
 notebook.
 
-    python main.py                        # full 101,826-row mix, 2 epochs
-    python main.py --max-samples 50000    # half the mix, same 2 passes
+    python main.py                        # 20k-row slice, 1 epoch (~28 GPU-h = one Kaggle week)
+    python main.py --max-samples 0 --epochs 2   # full 101,826-row mix, 2 passes (~283h measured)
     python main.py --gpus 1               # single T4 instead of both
     python main.py --no-resume            # quarantined checkpoints, start over
 
@@ -40,11 +40,16 @@ DATASET_REPO = "ozaa77/Cogito-0.9-qwen-sft-mix"
 DATASET_FILE = "qwen_sft_mix.jsonl"
 DEFAULT_HUB_REPO = "ozaa77/Cogito-0.9-qwen-sft-adapter"
 PRETOKENIZED_DIR = os.path.join(REPO_ROOT, "training_output", "pretokenized")
-# 0 = every row of the mix (101,826). The resume machinery checkpoints mid-run,
-# so multi-session Kaggle training is the normal path, not an exception.
-DEFAULT_MAX_SAMPLES = 0
-DEFAULT_EPOCHS = 2
-DEFAULT_SAVE_STEPS = 200
+# Kaggle budget: ~30 GPU-hours of weekly quota (12h max per session), and both
+# T4s together run this mix at a measured ~80 s/step (effective batch 16).
+# 20,000 rows x 1 epoch = 1,250 steps = ~28h — one weekly quota, spread over
+# 2-3 sessions via the Hub-resume machinery. 0 = every row of the mix
+# (101,826): measured ~283h for 2 epochs (~142h for 1) — multi-week territory.
+DEFAULT_MAX_SAMPLES = 20000
+# One pass is the SFT default; each extra epoch doubles the quota bill.
+DEFAULT_EPOCHS = 1
+# ~2.2h between saves at ~80 s/step, so a killed session loses at most ~2h.
+DEFAULT_SAVE_STEPS = 100
 
 from qwen_sft.config import (DEFAULT_BASE_MODEL, DEFAULT_GRAD_ACCUM,
                              DEFAULT_MAX_SEQ_LENGTH, MERGED_DIR)
@@ -220,6 +225,7 @@ def resolve_resume(args, token) -> str | None:
         training_output_dir=os.path.join(REPO_ROOT, "training_output"),
         hub_repo=args.hub_repo or "",
         hub_private=not args.public,
+        epochs=args.epochs,
     )
     return resolve_resume_checkpoint(ns)
 

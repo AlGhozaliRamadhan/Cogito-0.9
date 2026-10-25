@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - tensor-free CI environments
 
 from qwen_sft.finetune.train import (
     _best_local_checkpoint,
+    _checkpoint_epochs,
     _checkpoint_problem,
     _quarantine_local_checkpoints,
     resolve_resume_checkpoint,
@@ -31,13 +32,16 @@ from qwen_sft.finetune.train import (
 
 
 def make_checkpoint(root, step, *, with_state=True, adapter=True, optimizer=True,
-                    adapter_bytes=b"adapter", optimizer_bytes=None):
+                    adapter_bytes=b"adapter", optimizer_bytes=None, epochs=None):
     """Write a checkpoint-<step> dir with exactly the requested ingredients."""
     path = os.path.join(root, f"checkpoint-{step}")
     os.makedirs(path, exist_ok=True)
     if with_state:
+        state = {"global_step": step}
+        if epochs is not None:
+            state["num_train_epochs"] = epochs
         with open(os.path.join(path, "trainer_state.json"), "w", encoding="utf-8") as fh:
-            json.dump({"global_step": step}, fh)
+            json.dump(state, fh)
     if adapter:
         with open(os.path.join(path, "adapter_model.safetensors"), "wb") as fh:
             fh.write(adapter_bytes)
@@ -139,6 +143,86 @@ def test_best_ignores_non_checkpoint_dirs(tmp_path):
     os.makedirs(os.path.join(tmp_path, "hub_resume", "last-checkpoint"))
     os.makedirs(os.path.join(tmp_path, "stale-checkpoint-900"))
     assert _best_local_checkpoint(tmp_path) == (None, [])
+
+
+# ---------------------------------------------------------------- epoch plan
+
+
+def test_checkpoint_epochs_reads_plan(tmp_path):
+    assert _checkpoint_epochs(make_checkpoint(tmp_path, 100)) is None
+    assert _checkpoint_epochs(make_checkpoint(tmp_path, 200, epochs=2)) == 2.0
+
+
+def test_mismatched_epoch_plan_is_quarantined(tmp_path):
+    """A checkpoint from another run shape is moved aside, the matching one stays."""
+    make_checkpoint(tmp_path, 600, epochs=2.0)
+    matching = make_checkpoint(tmp_path, 300, epochs=1.0)
+    args = _args(tmp_path, epochs=1.0, resume_from_hub=False)
+    assert resolve_resume_checkpoint(args) is None
+    assert glob_prefix(tmp_path, "stale-checkpoint-6")
+    assert not glob_prefix(tmp_path, "checkpoint-6")
+    assert os.path.isdir(matching)
+
+
+def test_guard_is_inert_without_planned_epochs(tmp_path):
+    """Callers that don't carry --epochs (old integrations) behave as before."""
+    make_checkpoint(tmp_path, 600, epochs=2.0)
+    args = _args(tmp_path, resume_from_hub=False)
+    assert resolve_resume_checkpoint(args) is None
+    assert glob_prefix(tmp_path, "checkpoint-6")
+
+
+def test_matching_epoch_plan_resumes_locally(tmp_path, monkeypatch):
+    path = make_checkpoint(tmp_path, 300, epochs=1.0)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert resolve_resume_checkpoint(_args(tmp_path, epochs=1.0)) == path
+
+
+def _write_hub_checkpoint(hub_root, epochs):
+    """A complete last-checkpoint dir as snapshot_download would deliver it."""
+    path = os.path.join(hub_root, "last-checkpoint")
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "trainer_state.json"), "w", encoding="utf-8") as fh:
+        json.dump({"global_step": 600, "num_train_epochs": epochs}, fh)
+    with open(os.path.join(path, "adapter_model.safetensors"), "wb") as fh:
+        fh.write(b"adapter")
+    if torch is not None:
+        torch.save({"step": 600}, os.path.join(path, "optimizer.pt"))
+    else:
+        with open(os.path.join(path, "optimizer.pt"), "wb") as fh:
+            fh.write(b"opt")
+    return path
+
+
+def test_hub_checkpoint_from_other_plan_starts_fresh(tmp_path, monkeypatch):
+    """A Hub last-checkpoint saved under another epoch plan is never resumed."""
+    import huggingface_hub
+
+    hub_root = os.path.join(tmp_path, "hub_resume")
+
+    def fake_snapshot(repo_id, local_dir, allow_patterns):
+        # resolve wipes hub_resume first (clean-download guard), so the
+        # fake must deliver the files like a real snapshot_download would.
+        assert local_dir == hub_root
+        return _write_hub_checkpoint(local_dir, epochs=2.0)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    assert resolve_resume_checkpoint(_args(tmp_path, epochs=1.0)) is None
+    assert os.path.isdir(os.path.join(hub_root, "last-checkpoint"))
+
+
+def test_hub_checkpoint_with_matching_plan_resumes(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    hub_root = os.path.join(tmp_path, "hub_resume")
+
+    def fake_snapshot(repo_id, local_dir, allow_patterns):
+        return _write_hub_checkpoint(local_dir, epochs=1.0)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert resolve_resume_checkpoint(_args(tmp_path, epochs=1.0)) == \
+        os.path.join(hub_root, "last-checkpoint")
 
 
 # ---------------------------------------------------------------- quarantine
