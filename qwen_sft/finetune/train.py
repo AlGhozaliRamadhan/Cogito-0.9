@@ -780,9 +780,43 @@ def render_loss_chart(args) -> None:
         print("[CHART] no metrics found yet; nothing to plot.")
 
 
+def ensure_ddp_timeout(hours: int = 6) -> None:
+    """Give cross-process waits hours of budget instead of torch's 30 min.
+
+    TRL pre-tokenizes the whole corpus inside accelerate's
+    ``main_process_first`` barrier, and each rank tokenizes its own copy
+    sequentially: at Kaggle vCPU speed that is >30 minutes of rank-0 work
+    (>30 more on rank 1), while a waiting rank's default process-group
+    timeout is 30 minutes (`torch.distributed` calls ``init_process_group``
+    with ``timeout=timedelta(minutes=30)`` unless told otherwise — the
+    barrier then raises "store->get('0') got error: wait timeout" and
+    torchrun kills rank 0 mid-tokenize). torch has no post-init timeout
+    setter, so initialize the default group first; every later barrier
+    (accelerate, TRL) reuses it. Called before unsloth so nothing else can
+    create the group with the fatal default.
+    """
+    if os.environ.get("WORLD_SIZE", "1") in ("", "1"):
+        return
+    import datetime
+
+    import torch
+
+    try:
+        torch.distributed.init_process_group(
+            backend="nccl", timeout=datetime.timedelta(hours=hours)
+        )
+        print(f"[DDP] default process-group timeout raised to {hours}h "
+              "(pre-tokenization barrier safety)")
+    except Exception as exc:
+        print(f"[DDP] could not widen the process-group timeout: "
+              f"{type(exc).__name__}: {str(exc).splitlines()[0][:120]} "
+              "(a group pre-existed; TRL's barrier may time out again)")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_cuda()
+    ensure_ddp_timeout()
     # Unsloth patches trl/transformers/peft at import time; importing it after
     # them silently drops the fast kernels (slower, more VRAM). It must load
     # first — but not at module level, so `--help` stays dependency-free.
