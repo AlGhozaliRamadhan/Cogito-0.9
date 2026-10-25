@@ -16,27 +16,20 @@ env/
 # Testing
 .pytest_cache/
 
-# ---- Cogito training artifacts (GPU-only; generated on Kaggle) ----
-cogito_0.9_lora/
-cogito_training_output/
-cogito_0.9_merged/
-cogito_0.9_merged_16bit/
-Qwen2.5-Coder-14B-Cogito-Abliterated/
-Qwen3-14B-Cogito-Abliterated/
-cogito_0.9_abliteration_adapter/
-_hub_adapters/
-data/hf_shards/
+# ---- Training artifacts (GPU-only; produced on Kaggle) ----
+lora_adapter/
+training_output/
+merged_model/
+*.safetensors
 
-# ---- Dataset files (large generated artifacts; rebuild via cogito.scripts.*) ----
+# ---- Prepared datasets (rebuild with: python -m qwen_sft.datasets.prepare) ----
+data/prepared/
 *.jsonl
 
-# ---- Scratch and mock data ----
-scratch_test.py
-scratch/
-data/mock_hf_shards/
+# ---- Archived legacy artifacts (Cogito 0.9 datasets; local only) ----
+artifacts/
 
 # ---- Logs ----
-pipeline.log
 *.log
 
 # ---- Secrets ----

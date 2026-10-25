@@ -1,34 +1,23 @@
 # =============================================================================
-# Cogito 0.9 — Training & Inference Dependencies
+# Fine-tuning stack for Qwen3.5 4B (Kaggle: 2x T4)
 # =============================================================================
-# Install with: pip install -r requirements.txt
+# PyTorch with CUDA is already present in the Kaggle image. On a bare box,
+# install it first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
 #
-# PREREQUISITE: PyTorch with CUDA 12.1 must be installed FIRST.
-# Run this before pip install -r requirements.txt:
-#   pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
-#
-# For Unsloth (fast LoRA kernels), install separately from PyPI.
-# Pin the stable release: git main currently requires unsloth_zoo>=2026.8.6,
-# which is not published on PyPI yet (latest is 2026.8.5).
+# Unsloth is installed separately because the pinned Kaggle build is not on
+# PyPI under the plain name:
 #   pip install "unsloth[kaggle-new]==2026.8.8"
 # =============================================================================
 
-# --- Core Training Stack ---
+# --- Training ---
 transformers>=4.46.0
 datasets>=3.0.0
-trl>=0.12.0
+trl>=0.15.0
 peft>=0.13.0
 accelerate>=1.0.0
 bitsandbytes>=0.44.0
 
-# --- Tokenization & Data ---
-sentencepiece>=0.2.0
-protobuf>=4.25.0
-
-# --- Inference ---
-rich>=13.0.0
-
-# --- Utilities ---
-safetensors>=0.4.0
+# --- Hub / weights ---
 huggingface_hub>=0.25.0
-duckduckgo-search>=5.0.0
+safetensors>=0.4.0

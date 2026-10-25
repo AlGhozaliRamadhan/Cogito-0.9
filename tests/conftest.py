@@ -1,7 +1,7 @@
 """Test bootstrap.
 
 The repo is not pip-installed, so tests run from the checkout need the
-repository root on ``sys.path`` to import the ``cogito`` package. This is
+repository root on ``sys.path`` to import the ``qwen_sft`` package. This is
 the *only* place path setup lives — production code must never manipulate
 ``sys.path`` (see docs/ARCHITECTURE.md).
 """
