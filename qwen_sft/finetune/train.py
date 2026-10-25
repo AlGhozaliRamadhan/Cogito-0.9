@@ -309,8 +309,24 @@ def report_length_stats(dataset, tokenizer, max_seq_length, sample: int = 200) -
     if total == 0:
         return
     step = max(total // sample, 1)
-    texts = [dataset[index]["text"] for index in range(0, total, step)][:sample]
-    lengths = sorted(len(tokenizer(text, add_special_tokens=False)["input_ids"]) for text in texts)
+    lengths = []
+    warned = set()
+    for index in range(0, total, step):
+        if len(lengths) >= sample:
+            break
+        text = dataset[index]["text"]
+        try:
+            lengths.append(len(tokenizer(text, add_special_tokens=False)["input_ids"]))
+        except Exception as exc:
+            # A length report must never kill a training run; summarise once.
+            reason = type(exc).__name__
+            if reason not in warned:
+                warned.add(reason)
+                first = str(exc).splitlines()[0][:160]
+                print(f"[LENGTH] skipping untokenizable sample(s): {reason}: {first}")
+    if not lengths:
+        print("[LENGTH] no sample tokenized; skipping the stats report")
+        return
     over = sum(1 for length in lengths if length > max_seq_length)
     print(
         f"[LENGTH] sampled {len(lengths)}: median {lengths[len(lengths) // 2]} tokens, "
@@ -340,15 +356,25 @@ def load_base(model_name, max_seq_length, load_in_4bit):
         print(f"[LOAD] FastLanguageModel failed ({type(exc).__name__}: {exc})")
         print("[LOAD] Retrying with FastVisionModel (text-only LoRA)...")
         from unsloth import FastVisionModel
+        from transformers import AutoTokenizer
 
-        model, tokenizer = FastVisionModel.from_pretrained(
+        model, processor = FastVisionModel.from_pretrained(
             model_name=model_name,
             max_seq_length=max_seq_length,
             dtype=None,
             load_in_4bit=load_in_4bit,
         )
-        # FastVisionModel returns a processor; text-only SFT needs the tokenizer.
-        return model, getattr(tokenizer, "tokenizer", tokenizer), "vision"
+        # Text-only SFT needs a plain tokenizer: the processor's own __call__
+        # routes text into the image processor and dies on rendered
+        # transcripts ("cannot identify image file <_io.BytesIO..."). The
+        # processor may not even expose a nested `.tokenizer`, so build the
+        # text tokenizer from the checkpoint directly and keep the processor
+        # only as a chat-template source.
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if getattr(tokenizer, "chat_template", None) is None:
+            tokenizer.chat_template = getattr(processor, "chat_template", None)
+        print("[LOAD] text tokenizer from AutoTokenizer (train text-only)")
+        return model, tokenizer, "vision"
 
 
 def attach_lora(model, args, loader_kind):

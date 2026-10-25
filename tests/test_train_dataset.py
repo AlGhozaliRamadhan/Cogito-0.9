@@ -121,3 +121,37 @@ def test_load_jsonl_shard_requires_a_readable_file(tmp_path):
     write_jsonl(path, ["{ nope"])
     with pytest.raises(SystemExit):
         load_jsonl_shard(str(path))
+
+
+class FakeTokenizer:
+    """Words-as-tokens tokenizer, or one that always raises."""
+
+    def __init__(self, raise_on_call=False):
+        self.raise_on_call = raise_on_call
+
+    def __call__(self, text, add_special_tokens=False):
+        if self.raise_on_call:
+            raise ValueError("Incorrect image source. Must be a valid URL")
+        return {"input_ids": [0] * len(text.split())}
+
+
+def test_report_length_stats_counts_tokens():
+    pytest.importorskip("datasets")
+    from datasets import Dataset
+
+    from qwen_sft.finetune.train import report_length_stats
+
+    dataset = Dataset.from_list([{"text": "one two three"}])
+    report_length_stats(dataset, FakeTokenizer(raise_on_call=False),
+                        max_seq_length=16)  # must not raise
+
+
+def test_report_length_stats_survives_a_broken_tokenizer():
+    pytest.importorskip("datasets")
+    from datasets import Dataset
+
+    from qwen_sft.finetune.train import report_length_stats
+
+    dataset = Dataset.from_list([{"text": "anything"}] * 3)
+    report_length_stats(dataset, FakeTokenizer(raise_on_call=True),
+                        max_seq_length=4096)  # prints skip + returns
