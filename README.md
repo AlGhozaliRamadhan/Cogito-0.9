@@ -91,6 +91,12 @@ That run kept **101,826 conversations** (1.6 GB, median 1 446 tokens, p90 10 894
 
 `--skip-local-save` avoids writing 8 GB to `/kaggle/working`. Keep using the GGUF file afterwards; the adapter applies to the safetensors twin.
 
+### Training log & loss chart
+
+- Every log event appends to `training_output/train_log.jsonl` (loss, LR, grad-norm, epoch, step), and **the full history is mirrored into each checkpoint — so `last-checkpoint/train_log.jsonl` rides along with every Hub push**. Resumed sessions are seeded from that copy.
+- When a session finishes, `loss_chart.png` (loss + trend over the cosine LR schedule, epoch axis on top) is generated at the repo root automatically.
+- regenerate/adjust anytime: `python -m qwen_sft report --log training_output/train_log.jsonl --out my_chart.png` — or `--state <checkpoint>/trainer_state.json` to rebuild the curve purely from a checkpoint, even one downloaded from the Hub.
+
 ---
 
 ## Direct commands

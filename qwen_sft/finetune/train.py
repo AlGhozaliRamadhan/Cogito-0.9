@@ -533,6 +533,97 @@ def build_sft_config(args, training_output_dir):
         return SFTConfig(max_seq_length=args.max_seq_length, **kwargs)
 
 
+def build_jsonl_logger(log_path: str, seed_from: str | None = None):
+    """Trainer callback keeping the run's metrics in a JSONL log.
+
+    - Appends every log event to ``log_path`` (rank 0 only; reopened per row so
+      a killed session keeps every prior row).
+    - Seeded from ``seed_from`` (the resume source's trainer_state.json), so a
+      restarted session charts the steps it inherited too.
+    - On every checkpoint save it mirrors the full history as
+      ``train_log.jsonl`` inside the checkpoint dir that the Hub push uploads:
+      the curve rides along with each ``last-checkpoint`` update.
+    """
+    from transformers import TrainerCallback
+
+    from qwen_sft.report import dedupe, read_rows, rows_from_state
+
+    class _JsonlLogCallback(TrainerCallback):
+        def __init__(self, path: str, seed_path: str | None):
+            self.path = path
+            self.rows: dict[int, dict] = {}
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            if os.path.isfile(path):
+                for row in dedupe(read_rows(path)):
+                    self.rows[row["global_step"]] = row
+            elif seed_path:
+                # Fresh session continuing a past run: back-fill from the
+                # checkpoint we are resuming from (it comes with the Hub copy).
+                state_rows = dedupe(rows_from_state(
+                    os.path.join(seed_path, "trainer_state.json")))
+                for row in state_rows:
+                    self.rows[row["global_step"]] = row
+                self.flush(self.rows)
+
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            if not state.is_world_process_zero or not logs:
+                return
+            row = {key: value for key, value in logs.items() if key != "step"}
+            row["global_step"] = state.global_step
+            self.rows[state.global_step] = row
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row) + "\n")
+
+        def on_save(self, args, state, control, **kwargs):
+            if not state.is_world_process_zero:
+                return
+            target = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            if not os.path.isdir(target):
+                return
+            try:
+                with open(os.path.join(target, "train_log.jsonl"), "w",
+                          encoding="utf-8") as handle:
+                    for step in sorted(self.rows):
+                        handle.write(json.dumps(self.rows[step]) + "\n")
+            except OSError as exc:
+                print(f"[LOG] mirror into {target} failed: {exc}")
+
+        def flush(self, rows_by_step: dict[int, dict]) -> None:
+            with open(self.path, "w", encoding="utf-8") as handle:
+                for step in sorted(rows_by_step):
+                    handle.write(json.dumps(rows_by_step[step]) + "\n")
+
+    return _JsonlLogCallback(log_path, seed_from)
+
+
+def render_loss_chart(args) -> None:
+    """Best-effort loss chart at the end of a session; never fatal.
+
+    The curve also stays rebuildable from any checkpoint's trainer_state.json
+    (pushed to the Hub) via `python -m qwen_sft report`.
+    """
+    rank = os.environ.get("LOCAL_RANK", "0")
+    if rank not in ("", "0"):
+        return
+    try:
+        from qwen_sft.report import render_chart
+
+        result = render_chart(args.training_output_dir,
+                              out_path=os.path.join(PROJECT_ROOT, "loss_chart.png"))
+    except ImportError as exc:
+        print(f"[CHART] skipped ({exc}); pip install matplotlib "
+              "or run `python -m qwen_sft report` yourself.")
+        return
+    except Exception as exc:  # a chart must never kill a finished run
+        print(f"[CHART] skipped ({type(exc).__name__}: {exc}); "
+              "run `python -m qwen_sft report` to retry.")
+        return
+    if result:
+        print(f"[CHART] {result[0]} (source: {result[1]})")
+    else:
+        print("[CHART] no metrics found yet; nothing to plot.")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_cuda()
@@ -581,7 +672,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("[MASK] Loss is computed on assistant turns only.")
 
+    log_path = os.path.join(args.training_output_dir, "train_log.jsonl")
+    trainer.add_callback(build_jsonl_logger(log_path, seed_from=resume_path))
+    print(f"[LOG] metrics append to {log_path} (mirrored into every checkpoint push)")
+
     trainer.train(resume_from_checkpoint=resume_path)
+
+    render_loss_chart(args)
 
     output_dir = os.path.abspath(args.output_dir)
     print(f"[SAVE] adapter -> {output_dir}")

@@ -21,3 +21,6 @@ bitsandbytes>=0.44.0
 # --- Hub / weights ---
 huggingface_hub>=0.25.0
 safetensors>=0.4.0
+
+# --- Chart (training-curve report) ---
+matplotlib>=3.8.0

@@ -5,13 +5,14 @@
     python -m qwen_sft prepare --list     dataset preparation
     python -m qwen_sft train --help      LoRA training
     python -m qwen_sft merge --help      adapter merge
+    python -m qwen_sft report --help     training-curve chart
 
 Bare invocation keeps the old ``python -m qwen_sft --adapter ...`` behaviour.
 """
 
 import sys
 
-COMMANDS = {"chat", "prepare", "train", "merge"}
+COMMANDS = {"chat", "prepare", "train", "merge", "report"}
 
 
 def _dispatch(command: str, argv: list[str]) -> int:
@@ -21,6 +22,8 @@ def _dispatch(command: str, argv: list[str]) -> int:
         from qwen_sft.finetune.train import main
     elif command == "merge":
         from qwen_sft.finetune.merge import main
+    elif command == "report":
+        from qwen_sft.report import main
     else:
         from qwen_sft.runtime import main
     return main(argv) or 0

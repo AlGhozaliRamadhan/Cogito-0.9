@@ -26,6 +26,8 @@ qwen_sft/
 │   ├── sources.py     Source registry + normalizers + prepare_source()
 │   ├── prepare.py     CLI: stream a source, validate, write JSONL
 │   └── merge.py       CLI: prepare all, dedupe, shuffle, write one mix
+├── report.py          metrics JSONL -> research-style loss chart (CLI +
+│                      render_chart used after training)
 └── finetune/
     ├── train.py       Unsloth + TRL SFTTrainer, response-only loss
     └── merge.py       PEFT merge_and_unload -> safetensors (local or Hub)
@@ -94,6 +96,12 @@ only when a source yields zero valid conversations.
    complete one. Declined or `--fresh` runs rename old `checkpoint-*` dirs to
    `stale-checkpoint-*` so a later restart cannot inherit the previous run's
    optimizer/scheduler state.
+8. A rank-0 callback appends every log event to `training_output/train_log.jsonl`,
+   mirrors the full history into each saved checkpoint (so it pushes to the Hub
+   with `last-checkpoint`), and seeds from the resume source on a restarted
+   session. After training, `render_loss_chart` prints the curve as
+   `loss_chart.png`; `python -m qwen_sft report` rebuilds it from a JSONL log or
+   any checkpoint's `trainer_state.json`.
 
 ## Why the old validator is gone
 
