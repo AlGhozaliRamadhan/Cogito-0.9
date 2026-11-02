@@ -136,7 +136,14 @@ def ensure_hf_token() -> str | None:
 
 def install_stack() -> None:
     """Install the training stack once; skipping a working install saves ~3 min."""
-    probe = subprocess.run([sys.executable, "-c", "import unsloth"], check=False)
+    # The probe's stderr is silenced: a missing unsloth is the expected path, and
+    # its ModuleNotFoundError traceback reads like a crash in the Kaggle log.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import unsloth"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     if probe.returncode == 0:
         print("[INSTALL] Unsloth already importable; skipping pip.")
         return
