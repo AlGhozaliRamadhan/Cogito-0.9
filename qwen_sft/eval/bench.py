@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 
 from qwen_sft.config import DEFAULT_BASE_MODEL, PROJECT_ROOT
 from qwen_sft.eval.tasks import (
+    ANSWER_SUFFIX,
     FORMAT_TASKS,
     grade_format,
     grade_gsm8k,
@@ -128,13 +129,14 @@ def run_format(ask) -> dict:
     items = []
     started = time.time()
     for task in FORMAT_TASKS:
-        response = ask(task["prompt"])
+        response = ask(task["prompt"] + ANSWER_SUFFIX)
         passed, detail = grade_format(task, response)
         items.append({
             "id": task["id"],
             "rule": task["rule"],
             "passed": passed,
             "detail": detail,
+            "words": len(response.split()),
             "preview": preview(response),
         })
         print(f"[EVAL] format {task['id']}: {'pass' if passed else 'fail'} ({detail})", flush=True)

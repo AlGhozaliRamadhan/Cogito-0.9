@@ -8,6 +8,7 @@ from qwen_sft.eval import tasks
 from qwen_sft.eval.tasks import (
     CHECKS,
     FORMAT_TASKS,
+    extract_answer,
     extract_last_number,
     grade_format,
     grade_gsm8k,
@@ -16,25 +17,25 @@ from qwen_sft.eval.tasks import (
 )
 
 CANONICAL_PASS = {
-    "one_word": "Hello",
-    "one_word_paris": "Paris.",
-    "number_only_42": "42",
-    "yes_no": "NO",
-    "three_bullets": "- apple\n- banana\n- cherry",
-    "two_sentences": "Rain falls. It wets the ground.",
-    "json_ab": '{"a": 1, "b": 2}',
-    "banana_triplet": "banana banana banana",
+    "one_word": "Thinking...\nANSWER: Hello",
+    "one_word_paris": "Thinking...\nANSWER: Paris.",
+    "number_only_42": "Thinking...\nANSWER: 42",
+    "yes_no": "Thinking...\nANSWER: NO",
+    "three_bullets": "Thinking...\nANSWER:\n- apple\n- banana\n- cherry",
+    "two_sentences": "Thinking...\nANSWER: Rain falls. It wets the ground.",
+    "json_ab": 'Thinking...\nANSWER: {"a": 1, "b": 2}',
+    "banana_triplet": "Thinking...\nANSWER: banana banana banana",
 }
 
 CANONICAL_FAIL = {
-    "one_word": "Hello there",
-    "one_word_paris": "London",
-    "number_only_42": "The answer is 42",
-    "yes_no": "Maybe",
-    "three_bullets": "- apple\n- banana",
-    "two_sentences": "One sentence only.",
-    "json_ab": '{"a": 1}',
-    "banana_triplet": "banana banana",
+    "one_word": "Thinking...\nANSWER: Hello there",
+    "one_word_paris": "Thinking...\nANSWER: London",
+    "number_only_42": "Thinking...\nANSWER: The answer is 42",
+    "yes_no": "Thinking...\nANSWER: Maybe",
+    "three_bullets": "Thinking...\nANSWER:\n- apple\n- banana",
+    "two_sentences": "Thinking...\nANSWER: One sentence only.",
+    "json_ab": 'Thinking...\nANSWER: {"a": 1}',
+    "banana_triplet": "Thinking...\nANSWER: banana banana",
 }
 
 
@@ -92,8 +93,32 @@ def test_json_rule_tolerates_a_code_fence():
 
 def test_format_rule_is_graded_after_thinking_is_removed():
     task = next(task for task in FORMAT_TASKS if task["rule"] == "number_only_42")
-    response = f"Let me add. 17 + 25 = 42{tasks.THINK_CLOSE}42"
+    response = f"Let me add. 17 + 25 = 42{tasks.THINK_CLOSE}ANSWER: 42"
     assert grade_format(task, response)[0]
+
+
+def test_extract_answer_takes_the_last_marker():
+    # The prompt itself is echoed in the trace; the final marker is the answer.
+    raw = "The instruction says ANSWER: <answer>.\nANSWER: Paris"
+    assert extract_answer(raw) == "Paris"
+
+
+def test_extract_answer_falls_back_to_the_last_line():
+    # A checkpoint that ignores the marker is still measurable.
+    raw = "Thinking Process:\n1. Analyze\n2. Conclude\nParis"
+    assert extract_answer(raw) == "Paris"
+
+
+def test_extract_answer_returns_empty_when_there_is_no_text():
+    assert extract_answer("") == ""
+    assert extract_answer("<|im_end|>") == ""
+
+
+def test_grade_format_reports_a_missing_answer_distinctly():
+    task = next(task for task in FORMAT_TASKS if task["rule"] == "one_word")
+    passed, detail = grade_format(task, "")
+    assert not passed
+    assert detail == "no answer extracted"
 
 
 def test_unknown_rule_is_a_loud_bug_not_a_silent_skip():

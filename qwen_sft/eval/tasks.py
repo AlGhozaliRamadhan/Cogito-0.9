@@ -24,9 +24,14 @@ import random
 import re
 
 NUMBER_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?")
+ANSWER_MARKER = re.compile(r"answer\s*:\s*", re.IGNORECASE)
 
 THINK_CLOSE = "<｜end▁of▁thinking｜>"
 END_MARKERS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>")
+# Appended to every format prompt: this adapter reasons in visible prose, so
+# without an explicit boundary the answer cannot be told apart from the trace.
+ANSWER_SUFFIX = ("\n\nFinish with 'ANSWER:' followed by your final answer, "
+                 "and nothing after it.")
 # Enough to show what the model did without turning the report into a corpus.
 PREVIEW_CHARS = 240
 
@@ -45,6 +50,23 @@ def strip_thinking(text: str) -> str:
     for marker in END_MARKERS:
         text = text.split(marker, 1)[0]
     return text.strip()
+
+
+def extract_answer(text: str) -> str:
+    """The model's final answer, after the last ``ANSWER:`` marker.
+
+    This adapter has no thinking channel: it writes a "Thinking Process:" trace
+    into the same stream as the answer, so there is no token boundary to split
+    on. The prompt asks for an explicit marker instead. A checkpoint that
+    ignores the instruction falls back to its last non-empty line — a worse
+    guess, but better than scoring every rule a flat zero.
+    """
+    body = strip_thinking(text)
+    matches = list(ANSWER_MARKER.finditer(body))
+    if matches:
+        return body[matches[-1].end():].strip()
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def extract_last_number(text: str) -> float | None:
@@ -196,12 +218,19 @@ def grade_format(task: dict, response: str) -> tuple[bool, str]:
     check = CHECKS.get(task["rule"])
     if check is None:  # a task table and a rule table that disagree is a bug
         raise KeyError(f"unknown rule {task['rule']!r} for task {task['id']!r}")
-    return check(strip_thinking(response))
+    answer = extract_answer(response)
+    if not answer:
+        return (False, "no answer extracted")
+    return check(answer)
 
 
 def preview(text: str) -> str:
+    """Head and tail: a reasoning model puts its answer at the end."""
     body = " ".join(text.split())
-    return body[:PREVIEW_CHARS] + ("..." if len(body) > PREVIEW_CHARS else "")
+    if len(body) <= PREVIEW_CHARS:
+        return body
+    half = PREVIEW_CHARS // 2
+    return f"{body[:half]} ... {body[-half:]}"
 
 
 def _read_jsonl(path: str) -> list[dict]:
