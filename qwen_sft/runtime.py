@@ -66,7 +66,13 @@ def load(model_name: str, adapter: str | None, load_in_4bit: bool):
     return model, tokenizer
 
 
-def generate(model, tokenizer, messages, args) -> str:
+def generate(model, tokenizer, messages, args, skip_special_tokens=True) -> str:
+    """Generate one reply.
+
+    ``skip_special_tokens`` is False for evaluation: the thinking-close marker
+    is a special token, and dropping it makes the reasoning trace and the answer
+    an indistinguishable run of text.
+    """
     import torch
 
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -84,7 +90,7 @@ def generate(model, tokenizer, messages, args) -> str:
             **sampling,
         )
     new_tokens = output[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    return tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens).strip()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -44,6 +44,13 @@ def test_strip_thinking_keeps_only_the_answer_channel():
     assert strip_thinking("42") == "42"
 
 
+def test_strip_thinking_cuts_turn_end_markers_from_the_eval_decode():
+    # The eval path decodes with skip_special_tokens=False, so the turn end survives.
+    raw = f"thinking...{tasks.THINK_CLOSE} Paris<|im_end|>"
+    assert strip_thinking(raw) == "Paris"
+    assert strip_thinking("<|im_end|>") == ""
+
+
 def test_extract_last_number_handles_commas_and_currency():
     assert extract_last_number("The total is $1,234.50.") == 1234.5
     assert extract_last_number("#### 42") == 42.0

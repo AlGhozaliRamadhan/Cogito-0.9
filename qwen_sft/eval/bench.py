@@ -86,7 +86,13 @@ def build_generator(args):
     )
 
     def ask(prompt: str) -> str:
-        return generate(model, tokenizer, [{"role": "user", "content": prompt}], sampling)
+        return generate(
+            model,
+            tokenizer,
+            [{"role": "user", "content": prompt}],
+            sampling,
+            skip_special_tokens=False,  # keep the thinking-close marker for grading
+        )
 
     return ask, tokenizer
 

@@ -26,6 +26,7 @@ import re
 NUMBER_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?")
 
 THINK_CLOSE = "<｜end▁of▁thinking｜>"
+END_MARKERS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>")
 # Enough to show what the model did without turning the report into a corpus.
 PREVIEW_CHARS = 240
 
@@ -35,10 +36,14 @@ def strip_thinking(text: str) -> str:
 
     Qwen-style templates put the chain of thought before ``THINK_CLOSE``; grading
     the whole output would fail every format rule for a reason that has nothing
-    to do with instruction following.
+    to do with instruction following. Turn-end markers survive only when the
+    caller decodes with ``skip_special_tokens=False`` (the eval path), so they
+    are cut here rather than assumed absent.
     """
     if THINK_CLOSE in text:
-        return text.rsplit(THINK_CLOSE, 1)[1].strip()
+        text = text.rsplit(THINK_CLOSE, 1)[1]
+    for marker in END_MARKERS:
+        text = text.split(marker, 1)[0]
     return text.strip()
 
 
