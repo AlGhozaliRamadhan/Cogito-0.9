@@ -5,8 +5,8 @@ script; everything else — dependency install, dataset download, checkpoint-saf
 training — lives here so it is versioned in git instead of pasted into a
 notebook.
 
-    python main.py                        # 20k-row slice, 1 epoch (~28 GPU-h = one Kaggle week)
-    python main.py --max-samples 0 --epochs 2   # full 101,826-row mix, 2 passes (~283h measured)
+    python main.py                        # 20k-row slice, 1 epoch (~5.9 GPU-h measured)
+    python main.py --max-samples 0        # full 101,826-row mix, 1 epoch (~30 h)
     python main.py --gpus 1               # single T4 instead of both
     python main.py --no-resume            # quarantined checkpoints, start over
 
@@ -40,15 +40,15 @@ DATASET_REPO = "ozaa77/Cogito-0.9-qwen-sft-mix"
 DATASET_FILE = "qwen_sft_mix.jsonl"
 DEFAULT_HUB_REPO = "ozaa77/Cogito-0.9-qwen-sft-adapter"
 PRETOKENIZED_DIR = os.path.join(REPO_ROOT, "training_output", "pretokenized")
-# Kaggle budget: ~30 GPU-hours of weekly quota (12h max per session), and both
-# T4s together run this mix at a measured ~80 s/step (effective batch 16).
-# 20,000 rows x 1 epoch = 1,250 steps = ~28h — one weekly quota, spread over
-# 2-3 sessions via the Hub-resume machinery. 0 = every row of the mix
-# (101,826): measured ~283h for 2 epochs (~142h for 1) — multi-week territory.
+# Kaggle budget: ~30 GPU-hours of weekly quota (12h max per session). Measured
+# on 2xT4: 20,000 rows x 1 epoch = 1,250 steps in 21,222 s (17 s/step at
+# effective batch 16), so 1,250 x 17 s ~ 5.9h. Scaling that rate, the full mix
+# (101,826 rows) is 6,364 steps ~ 30h: exactly one weekly quota across three
+# 12-h sessions. 0 = every row of the mix.
 DEFAULT_MAX_SAMPLES = 20000
 # One pass is the SFT default; each extra epoch doubles the quota bill.
 DEFAULT_EPOCHS = 1
-# ~2.2h between saves at ~80 s/step, so a killed session loses at most ~2h.
+# ~28 min between saves at 17 s/step, so a killed session loses at most half an hour.
 DEFAULT_SAVE_STEPS = 100
 
 from qwen_sft.config import (DEFAULT_BASE_MODEL, DEFAULT_GRAD_ACCUM,

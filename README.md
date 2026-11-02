@@ -32,12 +32,12 @@ else:
 run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 ```
 
-**Time reality check (measured on 2×T4):** ~80 s/step at effective batch 16 → the default run, 20,000 rows × 1 epoch = 1,250 steps ≈ **28 h of GPU time**: one weekly 30-h quota, spread over 2–3 sessions. The full mix × 2 epochs measured ≈ **283 h ≈ 9–10 weekly quotas** — only via `--max-samples 0 --epochs 2`, and only if a multi-week run is acceptable. Either way: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and a checkpoint saved under a different epoch plan is never resumed). `--no-resume` starts over.
+**Time reality check (measured on 2×T4):** ~17 s/step at effective batch 16 → the default run, 20,000 rows × 1 epoch = 1,250 steps ≈ **5.9 h of GPU time** (measured 21,222 s). The full 101,826-row mix × 1 epoch = 6,364 steps ≈ **30 h** — the entire weekly quota, so it needs 3 sessions of the 12-h cap and leaves no headroom that week. × 2 epochs ≈ 60 h, i.e. two weeks. Either way: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and a checkpoint saved under a different epoch plan is never resumed). `--no-resume` starts over.
 
 | Want | Flag (all `main.py` flags) |
 | --- | --- |
-| bigger mix, ~2 weekly quotas (~56 h) | `--max-samples 40000` |
-| full 101,826-row mix, 1 epoch (~142 h ≈ 5 weekly quotas) | `--max-samples 0` |
+| bigger mix, ~2× the default (~12 h) | `--max-samples 40000` |
+| full 101,826-row mix, 1 epoch (~30 h = one weekly quota) | `--max-samples 0` |
 | second epoch (doubles the GPU bill) | `--epochs 2` |
 | force single-GPU (if DDP ever misbehaves) | `--gpus 1` |
 | OOM at 4096 | `--max-seq-length 2048` |
