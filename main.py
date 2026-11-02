@@ -93,6 +93,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--gpus", type=int, default=0,
                         help="GPUs for DDP training (0 = auto-detect; Kaggle "
                              "2x T4 trains on both, 1 forces single GPU)")
+    parser.add_argument("--install-only", action="store_true",
+                        help="Install the pinned stack and exit. Needed before "
+                             "`python -m qwen_sft eval` on a fresh Kaggle session, "
+                             "which does not import main.py.")
     args = parser.parse_args(argv)
     args.resume = True if args.resume is None else args.resume
     args.pretokenize = True if args.pretokenize is None else args.pretokenize
@@ -270,6 +274,9 @@ def build_train_cmd(args, dataset_path, token, gpus: int) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.install_only:
+        install_stack()
+        return 0
     token = ensure_hf_token()
     if not token and args.hub_repo:
         print("[HF] No HF_TOKEN: checkpoints stay local; a crash restarts training.")

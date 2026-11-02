@@ -42,6 +42,7 @@ run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 | force single-GPU (if DDP ever misbehaves) | `--gpus 1` |
 | OOM at 4096 | `--max-seq-length 2048` |
 | fresh start (old checkpoint dirs quarantined) | `--no-resume` |
+| install the pinned stack for `eval` on a fresh session | `--install-only` |
 | push somewhere else | `--hub-repo you/repo` (default `ozaa77/Cogito-0.9-qwen-sft-adapter`, private) |
 | public adapter | `--public` |
 
