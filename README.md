@@ -109,6 +109,11 @@ GSM8K overlaps the R1-distillation corpora this adapter trained on, so a gain ca
 be memorisation — a drop is real. Keep the report next to the adapter it
 measured; `--gsm8k-limit 0` skips GSM8K when you only want the format check.
 
+With `--adapter`, the run prints `[LOAD] adapter weight norm |B| = …` and warns
+when it is ~zero. PEFT initialises `lora_B` to zeros, so an adapter that saved
+without training produces byte-identical output to the base — and an eval that
+does not check would report "no change" as a result.
+
 ### Training log & loss chart
 
 - Every log event appends to `training_output/train_log.jsonl` (loss, LR, grad-norm, epoch, step), and **the full history is mirrored into each checkpoint — so `last-checkpoint/train_log.jsonl` rides along with every Hub push**. Resumed sessions are seeded from that copy.

@@ -77,6 +77,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def adapter_norm(model) -> float | None:
+    """Sum of ``|lora_B|`` over the model, or None when no adapter is attached.
+
+    PEFT initialises ``lora_B`` to zeros, so a trained adapter has a non-trivial
+    norm and an untrained one has exactly 0.0. Without this check an eval can
+    measure the base model while the report says it measured an adapter.
+    """
+    total = None
+    for name, param in model.named_parameters():
+        if "lora_B" in name:
+            value = float(param.detach().float().abs().sum())
+            total = value if total is None else total + value
+    return total
+
+
 def build_generator(args):
     """Load once, return ``ask(prompt) -> str``. Reuses the chat runtime loader."""
     from types import SimpleNamespace
@@ -84,6 +99,13 @@ def build_generator(args):
     from qwen_sft.runtime import generate, load
 
     model, tokenizer = load(args.model, args.adapter, load_in_4bit=not args.no_4bit)
+    if args.adapter:
+        norm = adapter_norm(model)
+        if norm is None:
+            raise SystemExit("[FATAL] --adapter was given but no LoRA weights are attached")
+        print(f"[LOAD] adapter weight norm |B| = {norm:.1f}")
+        if norm < 1.0:
+            print("[WARN] adapter weights are ~zero: this run measures the BASE model")
     sampling = SimpleNamespace(
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
