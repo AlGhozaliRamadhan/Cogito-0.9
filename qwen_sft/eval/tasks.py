@@ -24,7 +24,10 @@ import random
 import re
 
 NUMBER_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?")
-ANSWER_MARKER = re.compile(r"answer\s*:\s*", re.IGNORECASE)
+# Line-anchored: the model echoes the instruction inline ("the instruction says
+# ANSWER: ..."), and matching anywhere let that echo win over the real marker.
+ANSWER_LINE = re.compile(r"^[ \t>*#`-]*answer\*{0,2}\s*:[ \t]*\*{0,2}",
+                         re.IGNORECASE | re.MULTILINE)
 
 THINK_CLOSE = "<｜end▁of▁thinking｜>"
 END_MARKERS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>")
@@ -53,20 +56,42 @@ def strip_thinking(text: str) -> str:
 
 
 def extract_answer(text: str) -> str:
-    """The model's final answer, after the last ``ANSWER:`` marker.
+    """The model's final answer, after the last line-anchored ``ANSWER:`` marker.
 
     This adapter has no thinking channel: it writes a "Thinking Process:" trace
     into the same stream as the answer, so there is no token boundary to split
-    on. The prompt asks for an explicit marker instead. A checkpoint that
-    ignores the instruction falls back to its last non-empty line — a worse
-    guess, but better than scoring every rule a flat zero.
+    on. The prompt asks for an explicit marker instead.
+
+    Only the marker's own line is taken when it carries content, so a trailing
+    "7. Final verification" on the next line does not leak into the answer. A
+    marker alone on its line takes the block that follows (bullets, JSON). A
+    checkpoint that ignores the instruction falls back to its last non-empty
+    line — a worse guess, but better than scoring every rule a flat zero.
     """
     body = strip_thinking(text)
-    matches = list(ANSWER_MARKER.finditer(body))
+    matches = list(ANSWER_LINE.finditer(body))
     if matches:
-        return body[matches[-1].end():].strip()
+        rest = body[matches[-1].end():]
+        first_line = rest.split("\n", 1)[0].strip()
+        if first_line:
+            return first_line
+        block = []
+        for line in rest.splitlines()[1:]:
+            if not line.strip():
+                break
+            block.append(line.rstrip())
+        return "\n".join(block).strip()
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     return lines[-1] if lines else ""
+
+
+def is_truncated(text: str) -> bool:
+    """True when generation stopped at the token budget instead of a turn end.
+
+    The eval decodes with special tokens kept, so a finished reply carries
+    ``<|im_end|>``. A reply without one hit ``--max-new-tokens`` mid-sentence.
+    """
+    return not any(marker in text for marker in END_MARKERS)
 
 
 def extract_last_number(text: str) -> float | None:

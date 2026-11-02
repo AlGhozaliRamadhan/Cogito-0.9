@@ -16,9 +16,10 @@ real. Run it on the base, on the phase-1 adapter, and on every later adapter;
 the ``--compare`` delta is the thing you act on.
 
 Generation is sequential, so cost scales with ``--gsm8k-limit`` x
-``--max-new-tokens``. On a 4B in 4-bit, 100 items at 512 tokens is roughly an
-hour on one T4. A 100-item sample resolves deltas of about +/-8 points at 95%
-confidence — enough to catch a regression, not enough to claim a win.
+``--max-new-tokens``. This adapter spends 300+ words reasoning before it answers,
+so the budget is 1024: 100 items is roughly 1.5-2 h on one T4. A 100-item sample
+resolves deltas of about +/-8 points at 95% confidence — enough to catch a
+regression, not enough to claim a win.
 """
 
 import argparse
@@ -35,6 +36,7 @@ from qwen_sft.eval.tasks import (
     grade_format,
     grade_gsm8k,
     gsm8k_prompt,
+    is_truncated,
     load_gsm8k,
     preview,
     strip_thinking,
@@ -61,7 +63,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Report path (default: eval_report_<adapter|base>.json)")
     parser.add_argument("--gsm8k-limit", type=int, default=100,
                         help="GSM8K items to grade (0 = skip)")
-    parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--max-new-tokens", type=int, default=1024,
+                        help="Budget per reply. This adapter spends 300+ words on "
+                             "its trace before answering; 512 truncates it mid-thought")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="0 = greedy. Keep 0: sampled decoding makes runs incomparable")
     parser.add_argument("--no-4bit", action="store_true", help="Load in bf16/fp16")
@@ -108,6 +112,7 @@ def run_gsm8k(ask, args) -> dict:
         items.append({
             "id": row["id"],
             "correct": correct,
+            "truncated": is_truncated(response),
             "words": len(strip_thinking(response).split()),
             "preview": preview(response),
         })
@@ -136,6 +141,7 @@ def run_format(ask) -> dict:
             "rule": task["rule"],
             "passed": passed,
             "detail": detail,
+            "truncated": is_truncated(response),
             "words": len(response.split()),
             "preview": preview(response),
         })
@@ -207,6 +213,11 @@ def print_summary(report: dict, path: str) -> None:
     for key, value in report["metrics"].items():
         if key == "gsm8k":
             print(f"[EVAL] gsm8k mean answer length: {value['mean_answer_words']:.0f} words")
+        cut = [item["id"] for item in value["items"] if item.get("truncated")]
+        if cut:
+            shown = ", ".join(cut[:5]) + (f" (+{len(cut) - 5} more)" if len(cut) > 5 else "")
+            print(f"[WARN] {key}: {len(cut)}/{value['total']} hit --max-new-tokens "
+                  f"mid-reply — raise it before trusting this run: {shown}")
     failures = [item["id"] for item in report["metrics"]["format"]["items"] if not item["passed"]]
     if failures:
         print(f"[EVAL] format failures: {', '.join(failures)}")

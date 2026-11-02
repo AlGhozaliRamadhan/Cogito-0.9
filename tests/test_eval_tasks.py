@@ -12,6 +12,7 @@ from qwen_sft.eval.tasks import (
     extract_last_number,
     grade_format,
     grade_gsm8k,
+    is_truncated,
     load_gsm8k,
     strip_thinking,
 )
@@ -103,6 +104,17 @@ def test_extract_answer_takes_the_last_marker():
     assert extract_answer(raw) == "Paris"
 
 
+def test_extract_answer_keeps_only_the_marker_line():
+    # A trailing numbered step must not leak into the answer field.
+    raw = "Thinking...\nANSWER: banana banana banana\n7. Final verification: ok"
+    assert extract_answer(raw) == "banana banana banana"
+
+
+def test_extract_answer_takes_a_block_when_the_marker_stands_alone():
+    raw = "Thinking...\nANSWER:\n- apple\n- banana\n- cherry\n\nThat is all."
+    assert extract_answer(raw) == "- apple\n- banana\n- cherry"
+
+
 def test_extract_answer_falls_back_to_the_last_line():
     # A checkpoint that ignores the marker is still measurable.
     raw = "Thinking Process:\n1. Analyze\n2. Conclude\nParis"
@@ -119,6 +131,11 @@ def test_grade_format_reports_a_missing_answer_distinctly():
     passed, detail = grade_format(task, "")
     assert not passed
     assert detail == "no answer extracted"
+
+
+def test_is_truncated_reads_the_turn_end_marker():
+    assert is_truncated("Thinking Process: 1. Analyze ... the")
+    assert not is_truncated("ANSWER: Paris<|im_end|>")
 
 
 def test_unknown_rule_is_a_loud_bug_not_a_silent_skip():
