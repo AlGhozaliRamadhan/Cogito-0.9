@@ -71,14 +71,17 @@ def generate(model, tokenizer, messages, args) -> str:
 
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    sampling = dict(
+        do_sample=args.temperature > 0,
+        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+    )
+    if args.temperature > 0:  # greedy decoding must not carry sampling knobs
+        sampling.update(temperature=args.temperature, top_p=args.top_p)
     with torch.no_grad():
         output = model.generate(
             **inputs,
             max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            do_sample=args.temperature > 0,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            **sampling,
         )
     new_tokens = output[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()

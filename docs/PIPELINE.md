@@ -64,7 +64,21 @@ On Kaggle, keep the vocabulary small and the run short. A 4B at seq 2048,
 batch 1, grad-accum 16 fits a single 16 GB T4; `torchrun --nproc_per_node=2`
 uses both if you want the extra throughput.
 
-## 4. Test
+## 4. Evaluate
+
+```bash
+python -m qwen_sft eval --adapter ./lora_adapter
+python -m qwen_sft eval                                 # the base, for the delta
+python -m qwen_sft eval --compare eval_report_base.json eval_report_lora-adapter.json
+```
+
+Two numbers: GSM8K exact match (100 items, greedy, cached under `data/eval/`) and
+eight rule-graded format checks. Run it on the base and on every adapter; `--compare`
+prints the delta. Treat a GSM8K gain as a smoke test (the test set overlaps
+reasoning-distillation corpora) and a drop as a real regression. `--gsm8k-limit 0`
+runs only the format checks.
+
+## 5. Test
 
 ```bash
 python -m qwen_sft chat --adapter ./lora_adapter
@@ -74,7 +88,7 @@ Compare against the base on the same prompts with `--adapter` omitted. Format
 changes are the expected result; reasoning gains need a held-out benchmark, not
 a vibe check.
 
-## 5. Publish / merge
+## 6. Publish / merge
 
 ```bash
 # adapter

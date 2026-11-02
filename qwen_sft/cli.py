@@ -6,6 +6,7 @@
     python -m qwen_sft train --help      LoRA training
     python -m qwen_sft merge --help      adapter merge
     python -m qwen_sft report --help     training-curve chart
+    python -m qwen_sft eval --help       capability gate (GSM8K + format rules)
     python -m qwen_sft pretokenize --help  offline Arrow cache for DDP ranks
 
 Bare invocation keeps the old ``python -m qwen_sft --adapter ...`` behaviour.
@@ -13,7 +14,7 @@ Bare invocation keeps the old ``python -m qwen_sft --adapter ...`` behaviour.
 
 import sys
 
-COMMANDS = {"chat", "prepare", "pretokenize", "train", "merge", "report"}
+COMMANDS = {"chat", "prepare", "pretokenize", "train", "merge", "report", "eval"}
 
 
 def _dispatch(command: str, argv: list[str]) -> int:
@@ -27,6 +28,8 @@ def _dispatch(command: str, argv: list[str]) -> int:
         from qwen_sft.finetune.merge import main
     elif command == "report":
         from qwen_sft.report import main
+    elif command == "eval":
+        from qwen_sft.eval.bench import main
     else:
         from qwen_sft.runtime import main
     return main(argv) or 0

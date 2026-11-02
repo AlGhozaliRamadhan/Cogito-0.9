@@ -91,6 +91,20 @@ That run kept **101,826 conversations** (1.6 GB, median 1 446 tokens, p90 10 894
 
 `--skip-local-save` avoids writing 8 GB to `/kaggle/working`. Keep using the GGUF file afterwards; the adapter applies to the safetensors twin.
 
+### Evaluate before the next run
+
+```bash
+python -m qwen_sft eval                                  # base -> eval_report_base.json
+python -m qwen_sft eval --adapter ./lora_adapter         # -> eval_report_lora-adapter.json
+python -m qwen_sft eval --compare eval_report_base.json eval_report_lora-adapter.json
+```
+
+GSM8K exact match (100 items, greedy) plus eight rule-graded instruction-following
+checks. It is a regression gate, not a leaderboard: GSM8K overlaps the R1-distillation
+corpora this adapter trained on, so a gain can be memorisation — a drop is real. Keep
+the report next to the adapter it measured; `--gsm8k-limit 0` skips GSM8K when you only
+want the format check (a minute or two on a T4).
+
 ### Training log & loss chart
 
 - Every log event appends to `training_output/train_log.jsonl` (loss, LR, grad-norm, epoch, step), and **the full history is mirrored into each checkpoint — so `last-checkpoint/train_log.jsonl` rides along with every Hub push**. Resumed sessions are seeded from that copy.
@@ -104,6 +118,7 @@ That run kept **101,826 conversations** (1.6 GB, median 1 446 tokens, p90 10 894
 ```bash
 python -m qwen_sft                                  # chat (base + optional adapter)
 python -m qwen_sft chat --adapter ./lora_adapter
+python -m qwen_sft eval --adapter ./lora_adapter    # capability gate, see above
 python -m qwen_sft prepare --list                   # known sources
 python -m qwen_sft train --help
 python -m qwen_sft merge --help
