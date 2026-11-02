@@ -101,10 +101,13 @@ python -m qwen_sft eval --compare eval_report_base.json eval_report_lora-adapter
 ```
 
 GSM8K exact match (100 items, greedy) plus eight rule-graded instruction-following
-checks. It is a regression gate, not a leaderboard: GSM8K overlaps the R1-distillation
-corpora this adapter trained on, so a gain can be memorisation — a drop is real. Keep
-the report next to the adapter it measured; `--gsm8k-limit 0` skips GSM8K when you only
-want the format check (a minute or two on a T4).
+checks. Each also reports a **stop rate** — the share of replies that ended on
+their own turn token instead of hitting `--max-new-tokens`. Accuracy alone hides
+the failure mode this adapter actually has: it answers, then keeps auditing the
+answer until the budget runs out. It is a regression gate, not a leaderboard:
+GSM8K overlaps the R1-distillation corpora this adapter trained on, so a gain can
+be memorisation — a drop is real. Keep the report next to the adapter it
+measured; `--gsm8k-limit 0` skips GSM8K when you only want the format check.
 
 ### Training log & loss chart
 

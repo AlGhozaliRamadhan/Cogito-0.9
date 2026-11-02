@@ -120,10 +120,13 @@ def run_gsm8k(ask, args) -> dict:
             hits = sum(item["correct"] for item in items)
             print(f"[EVAL] gsm8k {index}/{len(rows)} accuracy={hits / index:.3f}", flush=True)
     hits = sum(item["correct"] for item in items)
+    stopped = sum(not item["truncated"] for item in items)
     return {
         "correct": hits,
         "total": len(rows),
         "accuracy": hits / len(rows) if rows else 0.0,
+        "stopped": stopped,
+        "stop_rate": stopped / len(rows) if rows else 0.0,
         "mean_answer_words": sum(item["words"] for item in items) / len(items) if items else 0.0,
         "seconds": round(time.time() - started, 1),
         "items": items,
@@ -147,10 +150,13 @@ def run_format(ask) -> dict:
         })
         print(f"[EVAL] format {task['id']}: {'pass' if passed else 'fail'} ({detail})", flush=True)
     hits = sum(item["passed"] for item in items)
+    stopped = sum(not item["truncated"] for item in items)
     return {
         "passed": hits,
         "total": len(items),
         "accuracy": hits / len(items) if items else 0.0,
+        "stopped": stopped,
+        "stop_rate": stopped / len(items) if items else 0.0,
         "seconds": round(time.time() - started, 1),
         "items": items,
     }
@@ -183,8 +189,12 @@ def _line(report: dict) -> str:
     fmt = report.get("metrics", {}).get("format")
     if gsm8k:
         parts.append(f"gsm8k {gsm8k['accuracy']:.3f} ({gsm8k['correct']}/{gsm8k['total']})")
+        if "stop_rate" in gsm8k:
+            parts.append(f"stop {gsm8k['stop_rate']:.2f}")
     if fmt:
         parts.append(f"format {fmt['accuracy']:.3f} ({fmt['passed']}/{fmt['total']})")
+        if "stop_rate" in fmt:
+            parts.append(f"stop {fmt['stop_rate']:.2f}")
     return "  ".join(parts)
 
 
@@ -196,11 +206,16 @@ def compare(first: str, second: str) -> int:
 
     print(f"[A] {_line(a)}")
     print(f"[B] {_line(b)}")
-    for key, label in (("gsm8k", "gsm8k accuracy"), ("format", "format accuracy")):
-        left = a.get("metrics", {}).get(key, {}).get("accuracy")
-        right = b.get("metrics", {}).get(key, {}).get("accuracy")
+    for key, field, label in (
+        ("gsm8k", "accuracy", "gsm8k accuracy"),
+        ("gsm8k", "stop_rate", "gsm8k stop rate"),
+        ("format", "accuracy", "format accuracy"),
+        ("format", "stop_rate", "format stop rate"),
+    ):
+        left = a.get("metrics", {}).get(key, {}).get(field)
+        right = b.get("metrics", {}).get(key, {}).get(field)
         if left is None or right is None:
-            print(f"    {label:<20} n/a (one report skipped it)")
+            print(f"    {label:<20} n/a (one report lacks it)")
             continue
         delta = right - left
         verdict = "better" if delta > 0.02 else "worse" if delta < -0.02 else "flat"
