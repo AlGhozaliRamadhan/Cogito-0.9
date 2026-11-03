@@ -27,12 +27,14 @@ from qwen_sft.finetune.train import (
     _checkpoint_epochs,
     _checkpoint_problem,
     _quarantine_local_checkpoints,
+    checkpoint_progress,
     resolve_resume_checkpoint,
 )
 
 
 def make_checkpoint(root, step, *, with_state=True, adapter=True, optimizer=True,
-                    adapter_bytes=b"adapter", optimizer_bytes=None, epochs=None):
+                    adapter_bytes=b"adapter", optimizer_bytes=None, epochs=None,
+                    max_steps=None):
     """Write a checkpoint-<step> dir with exactly the requested ingredients."""
     path = os.path.join(root, f"checkpoint-{step}")
     os.makedirs(path, exist_ok=True)
@@ -40,6 +42,8 @@ def make_checkpoint(root, step, *, with_state=True, adapter=True, optimizer=True
         state = {"global_step": step}
         if epochs is not None:
             state["num_train_epochs"] = epochs
+        if max_steps is not None:
+            state["max_steps"] = max_steps
         with open(os.path.join(path, "trainer_state.json"), "w", encoding="utf-8") as fh:
             json.dump(state, fh)
     if adapter:
@@ -136,6 +140,30 @@ def test_best_reports_every_rejection_when_all_are_bad(tmp_path):
     assert best is None
     assert len(rejected) == 2
     assert all(reason for _, reason in rejected)
+
+
+def test_finished_checkpoint_is_never_a_resume_source(tmp_path):
+    # A run that reached its own max_steps has nothing left: resuming it trains
+    # range(global_step, max_steps) = 0 steps and still reports success, so the
+    # new plan must start at step 0 and take the weights from the adapter.
+    make_checkpoint(tmp_path, 1250, max_steps=1250)
+    newer = make_checkpoint(tmp_path, 100, max_steps=6364)
+    best, rejected = _best_local_checkpoint(tmp_path)
+    assert best == newer
+    assert [os.path.basename(path) for path, _ in rejected] == ["checkpoint-1250"]
+    assert "1250/1250" in rejected[0][1]
+
+
+def test_all_finished_checkpoints_leave_nothing_to_resume(tmp_path):
+    make_checkpoint(tmp_path, 1250, max_steps=1250)
+    best, rejected = _best_local_checkpoint(tmp_path)
+    assert best is None
+    assert len(rejected) == 1
+
+
+def test_checkpoint_progress_needs_both_numbers(tmp_path):
+    assert checkpoint_progress(make_checkpoint(tmp_path, 100)) is None
+    assert checkpoint_progress(make_checkpoint(tmp_path, 200, max_steps=900)) == (200, 900)
 
 
 def test_best_ignores_non_checkpoint_dirs(tmp_path):

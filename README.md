@@ -9,7 +9,9 @@ The old Cogito extras (abliteration, synthetic data, TTS, upload scripts) are go
 
 One-time setup: **Settings → Accelerator: GPU T4 ×2** (both are used — training launches under `torchrun` DDP automatically), **Internet: on**, and secret `HF_TOKEN` (**Add-ons → Secrets**, a write token from huggingface.co/settings/tokens). No token = trains local-only and a crash restarts from zero.
 
-Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the mix, trains the default **20,000-row slice × 1 epoch on both T4s** (≈ 28 GPU-h — one weekly quota), checkpoints to the Hub every 100 steps, resumes automatically on rerun, and uploads the finished adapter.
+Paste this single cell and run. It does **everything**: pulls this repo, installs deps, downloads the mix, trains **one full pass over all 101,826 rows on both T4s** (≈ 30 GPU-h, so three 12-h sessions), checkpoints to the Hub every 100 steps, resumes automatically on rerun, and uploads the finished adapter.
+
+**Each session is a "phase" of the same run.** Run the cell, let Kaggle kill it at the 12-h limit, reopen the notebook, run the same cell. It picks up at the last checkpoint and keeps going until the pass is finished. The weights are never thrown away: a new plan (after a finished pass) starts from the adapter the repo already holds instead of from the base model.
 
 ```python
 # Cogito 0.9 — one-cell Kaggle SFT run (bootstrap -> main.py)
@@ -32,12 +34,12 @@ else:
 run([sys.executable, os.path.join(REPO_DIR, "main.py")], cwd=REPO_DIR)
 ```
 
-**Time reality check (measured on 2×T4):** ~17 s/step at effective batch 16 → the default run, 20,000 rows × 1 epoch = 1,250 steps ≈ **5.9 h of GPU time** (measured 21,222 s). The full 101,826-row mix × 1 epoch = 6,364 steps ≈ **30 h** — the entire weekly quota, so it needs 3 sessions of the 12-h cap and leaves no headroom that week. × 2 epochs ≈ 60 h, i.e. two weeks. Either way: killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, and a checkpoint saved under a different epoch plan is never resumed). `--no-resume` starts over.
+**Time reality check (measured on 2×T4):** ~17 s/step at effective batch 16 → the default run, 101,826 rows × 1 epoch = 6,364 steps ≈ **30 h of GPU time** — the entire weekly quota, so it needs 3 sessions of the 12-h cap and leaves no headroom that week. × 2 epochs ≈ 60 h, i.e. two weeks. Killed at hour 11? Run the same cell — it resumes from the last good checkpoint (asks with a prompt; headless reruns continue automatically; a torn checkpoint is skipped for the previous complete one, a checkpoint saved under a different epoch plan is never resumed, and a checkpoint that already reached its own final step is not resumed either — resuming it would train zero steps). `--no-resume` starts over.
 
 | Want | Flag (all `main.py` flags) |
 | --- | --- |
-| bigger mix, ~2× the default (~12 h) | `--max-samples 40000` |
-| full 101,826-row mix, 1 epoch (~30 h = one weekly quota) | `--max-samples 0` |
+| the 20,000-row slice (≈ 5.9 h, the phase-1 run) | `--max-samples 20000` |
+| half the mix as a cheaper pass (~12 h) | `--max-samples 50000` |
 | second epoch (doubles the GPU bill) | `--epochs 2` |
 | force single-GPU (if DDP ever misbehaves) | `--gpus 1` |
 | OOM at 4096 | `--max-seq-length 2048` |

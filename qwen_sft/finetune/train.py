@@ -69,6 +69,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lora-r", type=int, default=DEFAULT_LORA_R)
     parser.add_argument("--lora-alpha", type=int, default=DEFAULT_LORA_ALPHA)
     parser.add_argument("--lora-dropout", type=float, default=DEFAULT_LORA_DROPOUT)
+    parser.add_argument("--init-adapter", default=None,
+                        help="Adapter (repo id or dir) whose weights this run continues "
+                             "training. Its r/alpha/targets are reused so the tensors fit; "
+                             "a missing adapter is not an error (first run on a repo).")
     parser.add_argument("--output-dir", default=os.path.join(PROJECT_ROOT, "lora_adapter"),
                         help="Where the final LoRA adapter is saved")
     parser.add_argument("--training-output-dir", default=os.path.join(PROJECT_ROOT, "training_output"),
@@ -401,9 +405,51 @@ def load_base(model_name, max_seq_length, load_in_4bit):
         return model, normalize_to_text_tokenizer(processor, model_name), "vision"
 
 
+def _adapter_config(source):
+    """``PeftConfig`` of an adapter to continue, or None when there is nothing there.
+
+    A first run points ``--init-adapter`` at a repo that may not exist yet; that
+    is the normal path, not an error, so it falls back to a fresh LoRA.
+    """
+    from peft import PeftConfig
+
+    try:
+        return PeftConfig.from_pretrained(source)
+    except Exception as exc:
+        print(f"[LoRA] no adapter to continue from at {source} "
+              f"({type(exc).__name__}: {exc}); starting from the base weights")
+        return None
+
+
+def _load_adapter_weights(model, source):
+    """Copy a previous adapter's tensors into the freshly built LoRA.
+
+    PEFT zero-initialises ``lora_B``, so without this the run would train a new
+    adapter from scratch and quietly discard the checkpoint it was told to
+    continue — the exact failure ``--init-adapter`` exists to prevent.
+    """
+    from peft import load_peft_weights, set_peft_model_state_dict
+
+    state = load_peft_weights(source, device="cpu")
+    result = set_peft_model_state_dict(model, state)
+    missing = list(getattr(result, "missing_keys", []) or [])
+    unexpected = list(getattr(result, "unexpected_keys", []) or [])
+    print(f"[LoRA] continued from {source}: {len(state)} tensors, "
+          f"{len(missing)} missing, {len(unexpected)} unexpected")
+    if missing or unexpected:
+        print(f"[LoRA] first missing: {missing[:3]} | first unexpected: {unexpected[:3]}")
+    norm = sum(float(param.detach().float().abs().sum())
+               for name, param in model.named_parameters() if "lora_B" in name)
+    print(f"[LoRA] |lora_B| = {norm:.1f}")
+    if norm == 0.0:
+        print("[LoRA] WARNING: the loaded adapter is all zeros — continuing from it "
+              "is identical to starting from the base model")
+
+
 def attach_lora(model, args, loader_kind):
     from unsloth import FastLanguageModel
 
+    config = _adapter_config(args.init_adapter) if args.init_adapter else None
     common = dict(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -413,8 +459,17 @@ def attach_lora(model, args, loader_kind):
         use_gradient_checkpointing="unsloth",
         random_state=args.seed,
     )
+    if config is not None:
+        # The shape must match the tensors being loaded, not this run's flags.
+        common["r"] = config.r or args.lora_r
+        common["lora_alpha"] = config.lora_alpha or args.lora_alpha
+        if config.lora_dropout is not None:
+            common["lora_dropout"] = config.lora_dropout
+        if config.target_modules:
+            common["target_modules"] = config.target_modules
     if loader_kind == "language":
-        model = FastLanguageModel.get_peft_model(model, use_rslora=False, **common)
+        model = FastLanguageModel.get_peft_model(
+            model, use_rslora=bool(getattr(config, "use_rslora", False)), **common)
     else:
         from unsloth import FastVisionModel
 
@@ -426,6 +481,9 @@ def attach_lora(model, args, loader_kind):
             finetune_mlp_modules=True,
             **common,
         )
+
+    if config is not None:
+        _load_adapter_weights(model, args.init_adapter)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
@@ -553,6 +611,11 @@ def resolve_resume_checkpoint(args) -> str | None:
     if problem:
         print(f"[HF] Hub last-checkpoint is unusable ({problem}); starting fresh.")
         return None
+    finished = _finished(path)
+    if finished:
+        print(f"[HF] Hub last-checkpoint is {finished}; that run is done, so this "
+              "starts a new plan at step 0 (the weights carry over via --init-adapter).")
+        return None
     recorded = _checkpoint_epochs(path)
     if planned_epochs is not None and recorded is not None and recorded != planned_epochs:
         print(f"[HF] Hub last-checkpoint was saved under num_train_epochs="
@@ -598,6 +661,29 @@ def _ask_continue(path, source) -> bool:
 
 
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
+def checkpoint_progress(path):
+    """``(global_step, max_steps)`` from a checkpoint, or None if unreadable.
+
+    ``max_steps`` is what Trainer itself computed for that run, so comparing the
+    two identifies a checkpoint that finished its own plan: resuming it trains
+    ``range(global_step, max_steps)`` = zero steps and still reports success.
+    """
+    try:
+        with open(os.path.join(path, "trainer_state.json"), encoding="utf-8") as handle:
+            state = json.load(handle)
+        return int(state["global_step"]), int(state["max_steps"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _finished(path) -> str | None:
+    """Why a checkpoint has no steps left in its own plan, or None."""
+    progress = checkpoint_progress(path)
+    if progress and progress[1] > 0 and progress[0] >= progress[1]:
+        return f"already at step {progress[0]}/{progress[1]} of its own plan"
+    return None
 
 
 def _checkpoint_problem(path) -> str | None:
@@ -651,6 +737,8 @@ def _best_local_checkpoint(training_output_dir):
     rejected = []
     for path in dirs:
         problem = _checkpoint_problem(path)
+        if problem is None:
+            problem = _finished(path)
         if problem is None:
             return path, rejected
         rejected.append((path, problem))

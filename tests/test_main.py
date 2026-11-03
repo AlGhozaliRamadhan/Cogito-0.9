@@ -23,9 +23,9 @@ def test_main_help_runs_without_dependencies():
 def test_main_defaults_pin_kaggle_week_run():
     """Help output must reflect the runner defaults so regressions are visible.
 
-    Defaults are a one-week Kaggle plan: ~30 GPU-hours of weekly quota at a
-    measured ~80 s/step (effective batch 16) -> 20k rows x 1 epoch x 100-step
-    saves ~= 28h.
+    The default is one full pass over the 101,826-row mix: 6,364 steps at a
+    measured 17 s/step (effective batch 16) ~= 30 GPU-h, i.e. the whole weekly
+    quota, spread over three 12-h sessions that resume from the Hub.
     """
     result = subprocess.run(
         [sys.executable, str(MAIN), "--help"],
@@ -34,10 +34,10 @@ def test_main_defaults_pin_kaggle_week_run():
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "(default: 20000)" in result.stdout  # max-samples: one weekly quota
+    assert "(default: 0)" in result.stdout      # max-samples: every row of the mix
     assert "(default: 1)" in result.stdout      # epochs: a single pass
     assert "4096" in result.stdout              # max-seq-length
-    assert "(default: 100)" in result.stdout    # save-steps: ~2h between saves
+    assert "(default: 100)" in result.stdout    # save-steps: ~28 min between saves
 
 
 def _runner_args(**overrides):

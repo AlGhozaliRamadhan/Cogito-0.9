@@ -5,8 +5,8 @@ script; everything else — dependency install, dataset download, checkpoint-saf
 training — lives here so it is versioned in git instead of pasted into a
 notebook.
 
-    python main.py                        # 20k-row slice, 1 epoch (~5.9 GPU-h measured)
-    python main.py --max-samples 0        # full 101,826-row mix, 1 epoch (~30 h)
+    python main.py                        # full 101,826-row mix, 1 epoch (~30 h = one Kaggle week)
+    python main.py --max-samples 20000    # the 20k slice phase 1 used (~5.9 GPU-h)
     python main.py --gpus 1               # single T4 instead of both
     python main.py --no-resume            # quarantined checkpoints, start over
 
@@ -38,14 +38,15 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_REPO = "ozaa77/Cogito-0.9-qwen-sft-mix"
 DATASET_FILE = "qwen_sft_mix.jsonl"
+# The same repo is reused for every session of the run: its `last-checkpoint`
+# is how a new Kaggle session finds where the last one stopped.
 DEFAULT_HUB_REPO = "ozaa77/Cogito-0.9-qwen-sft-adapter"
 PRETOKENIZED_DIR = os.path.join(REPO_ROOT, "training_output", "pretokenized")
 # Kaggle budget: ~30 GPU-hours of weekly quota (12h max per session). Measured
 # on 2xT4: 20,000 rows x 1 epoch = 1,250 steps in 21,222 s (17 s/step at
-# effective batch 16), so 1,250 x 17 s ~ 5.9h. Scaling that rate, the full mix
-# (101,826 rows) is 6,364 steps ~ 30h: exactly one weekly quota across three
-# 12-h sessions. 0 = every row of the mix.
-DEFAULT_MAX_SAMPLES = 20000
+# effective batch 16), so scaling that rate, the full mix (101,826 rows) is
+# 6,364 steps ~ 30h: one weekly quota over three 12-h sessions. 0 = every row.
+DEFAULT_MAX_SAMPLES = 0
 # One pass is the SFT default; each extra epoch doubles the quota bill.
 DEFAULT_EPOCHS = 1
 # ~28 min between saves at 17 s/step, so a killed session loses at most half an hour.
@@ -241,6 +242,20 @@ def resolve_resume(args, token) -> str | None:
     return resolve_resume_checkpoint(ns)
 
 
+def init_adapter_source(args) -> str | None:
+    """Weights this run continues from: this session's save, else the Hub repo.
+
+    Without it every run starts from PEFT's zero-initialised LoRA, so a second
+    run discards the first one's training no matter what the Hub holds. A
+    missing adapter is not an error here — ``train.py`` falls back to the base
+    weights for a genuinely first run.
+    """
+    local = os.path.join(REPO_ROOT, "lora_adapter")
+    if os.path.isfile(os.path.join(local, "adapter_model.safetensors")):
+        return local
+    return args.hub_repo or None
+
+
 def build_train_cmd(args, dataset_path, token, gpus: int) -> list[str]:
     resolved = resolve_resume(args, token)
     # Each rank trains its own batch under DDP, so halve accumulation to keep
@@ -259,6 +274,14 @@ def build_train_cmd(args, dataset_path, token, gpus: int) -> list[str]:
         print(f"[TRAIN] resuming from {resolved}")
     else:
         train_args += ["--fresh"]
+        # A fresh plan must not restart from PEFT's zeroed LoRA: carry the
+        # weights this repo already trained forward. When a checkpoint IS
+        # resumed, Trainer reloads the adapter from it, so this would only
+        # overwrite newer weights with the older root copy.
+        source = init_adapter_source(args)
+        if source:
+            train_args += ["--init-adapter", source]
+            print(f"[TRAIN] continuing the weights at {source}")
     if args.hub_repo and token:
         train_args += ["--hub-repo", args.hub_repo]
         if not args.public:
